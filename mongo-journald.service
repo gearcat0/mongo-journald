@@ -1,6 +1,6 @@
 [Unit]
 Description=mongo-journald — ship systemd-journald logs to MongoDB
-Documentation=https://github.com/contrailm/mongo-journald
+Documentation=https://github.com/gearcat0/mongo-journald
 After=network-online.target
 Wants=network-online.target
 

@@ -35,7 +35,7 @@ nfpms:
   - id: mongo-journald
     package_name: mongo-journald
     homepage: https://github.com/gearcat0/mongo-journald
-    maintainer: "mongo-journald maintainers <noreply@example.com>"
+    maintainer: "Sean <sean@foobox.net>"
     description: |
       Ship systemd-journald logs to MongoDB with TTL retention.
       A per-host daemon that streams journald entries into a MongoDB collection
