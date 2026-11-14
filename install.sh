@@ -2,7 +2,7 @@
 #
 # install.sh — install and start mongo-journald on THIS host. Run as root.
 #
-#   sudo MONGO_JOURNALD_URI='mongodb://w_syslog:PASS@blue/syslog?authSource=syslog' ./install.sh [path-to-binary]
+#   sudo MONGO_JOURNALD_URI='mongodb://w_syslog:PASS@MONGO_HOST/syslog?authSource=syslog' ./install.sh [path-to-binary]
 #
 # Idempotent: re-running upgrades the binary + unit and restarts the
 # service, and never overwrites an existing /etc/mongo-journald/config.json.

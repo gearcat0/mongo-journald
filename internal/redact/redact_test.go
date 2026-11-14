@@ -8,7 +8,7 @@ func TestMessageRedactsSecrets(t *testing.T) {
 		{"login password=hunter2 ok", "login password=" + Placeholder + " ok"},
 		{"api_key = AKIA123SECRET done", "api_key = " + Placeholder + " done"},
 		{"token: abc.def.ghi", "token: " + Placeholder},
-		{`connecting to mongodb://user:p4ss@blue/syslog`, "connecting to mongodb://" + Placeholder + "@blue/syslog"},
+		{`connecting to mongodb://user:p4ss@MONGO_HOST/syslog`, "connecting to mongodb://" + Placeholder + "@MONGO_HOST/syslog"},
 		{"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "Authorization: Bearer " + Placeholder},
 		{`{"level":"info","password":"hunter2","user":"bob"}`, `{"level":"info","password":"REDACTED","user":"bob"}`},
 		{"nothing secret here", "nothing secret here"},

@@ -36,7 +36,7 @@ Pure Go (no cgo), Go 1.27. `journalctl` must be on `PATH` at runtime.
 it comes from `MONGO_JOURNALD_URI` so credentials stay out of config:
 
 ```
-MONGO_JOURNALD_URI=mongodb://w_syslog:PASS@blue/syslog?authSource=syslog
+MONGO_JOURNALD_URI=mongodb://w_syslog:PASS@MONGO_HOST/syslog?authSource=syslog
 ```
 
 Key options: `priority` (syslog floor, default `6` = info and above, drops debug), `retention`
@@ -63,7 +63,7 @@ and prefer not enabling `rawFields` on hosts with sensitive logs.
 Per box, as root:
 
 ```sh
-sudo MONGO_JOURNALD_URI='mongodb://w_syslog:PASS@blue/syslog?authSource=syslog' ./install.sh
+sudo MONGO_JOURNALD_URI='mongodb://w_syslog:PASS@MONGO_HOST/syslog?authSource=syslog' ./install.sh
 ```
 
 `install.sh` creates the `mongo-journald` service user (in group `systemd-journal` for journal read),
@@ -119,7 +119,7 @@ install steps, mirroring `install.sh` minus the secret), `.github/workflows/{ci,
 tests + a snapshot package on every push/PR; release fires on a `v*` tag). A signed apt repo for
 `apt update && apt install mongo-journald` is the natural follow-on.
 
-## One-time MongoDB setup on `blue`
+## One-time MongoDB setup (on the Mongo host)
 
 Create the DB and a least-privilege writer (auth source = the app DB, mirroring `r_mover`):
 
@@ -133,7 +133,7 @@ db.createUser({ user: "r_syslog", pwd: "PASS2", roles: [{ role: "read", db: "sys
 Indexes (TTL + lookups) are created by the daemon at startup — no provisioning step needed.
 
 **Security:** system logs can contain usernames, IPs, command lines and occasional secrets, and they
-plus the Mongo credentials cross the network to `blue`. Enable TLS on `mongod`, require auth, and
+plus the Mongo credentials cross the network to the Mongo host. Enable TLS on `mongod`, require auth, and
 firewall it to the tailnet. Consider shortening `retention` for auth-heavy hosts.
 
 ## Verify
@@ -142,8 +142,8 @@ firewall it to the tailnet. Consider shortening `retention` for auth-heavy hosts
 # 1. field mapping, no Mongo needed:
 journalctl -o json -n 50 | ./mongo-journald --dry-run --stdin
 
-# 2. one host → blue, then in mongosh:
-mongosh "mongodb://r_syslog:PASS2@blue/syslog?authSource=syslog" --eval '
+# 2. one host → the Mongo host, then in mongosh:
+mongosh "mongodb://r_syslog:PASS2@MONGO_HOST/syslog?authSource=syslog" --eval '
   printjson(db.events.getIndexes());                 // expect expireAt_ttl (expireAfterSeconds:0)
   printjson(db.events.find().sort({at:-1}).limit(1).toArray());
 '
