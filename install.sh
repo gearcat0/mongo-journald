@@ -31,7 +31,7 @@ if ! id -u mongo-journald >/dev/null 2>&1; then
 	useradd --system --no-create-home --shell /usr/sbin/nologin mongo-journald
 fi
 
-install -m 0755 "$bin_src" /usr/local/bin/mongo-journald
+install -m 0755 "$bin_src" /usr/bin/mongo-journald
 install -d -m 0755 /etc/mongo-journald
 install -d -o mongo-journald -g mongo-journald -m 0750 /var/lib/mongo-journald
 

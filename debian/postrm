@@ -1,0 +1,35 @@
+#!/bin/sh
+# postrm — clean up after removal.
+#   remove: files are gone; just reload systemd.
+#   purge:  also drop the generated env file, the state dir, and the
+#           service account. dpkg removes the config.json conffile itself.
+set -e
+
+SERVICE=mongo-journald.service
+SVC_USER=mongo-journald
+LIBDIR=/var/lib/mongo-journald
+ENVFILE=/etc/mongo-journald/env
+
+case "$1" in
+purge)
+	rm -f "$ENVFILE"
+	rm -rf "$LIBDIR"
+	# remove the config dir once dpkg has taken the conffile; harmless if
+	# it is not yet empty.
+	rmdir /etc/mongo-journald 2>/dev/null || true
+	if id -u "$SVC_USER" >/dev/null 2>&1; then
+		userdel "$SVC_USER" >/dev/null 2>&1 || true
+	fi
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	;;
+remove)
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	;;
+upgrade | failed-upgrade | abort-install | abort-upgrade | disappear) ;;
+esac
+
+exit 0

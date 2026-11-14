@@ -1,0 +1,63 @@
+#!/bin/sh
+# postinst — configure mongo-journald after dpkg unpacks its files.
+#
+# Mirrors install.sh, minus the secret: it creates the service account and
+# state dir, drops a root-only PLACEHOLDER env file if none exists (the
+# Mongo URI is never shipped in the package), and enables the unit. On a
+# fresh install the service is left STOPPED until the operator sets
+# MONGO_JOURNALD_URI; on upgrade a running service is restarted in place.
+set -e
+
+SERVICE=mongo-journald.service
+SVC_USER=mongo-journald
+LIBDIR=/var/lib/mongo-journald
+ENVFILE=/etc/mongo-journald/env
+
+systemd_running() {
+	[ -d /run/systemd/system ]
+}
+
+case "$1" in
+configure)
+	# dedicated unprivileged service account
+	if ! id -u "$SVC_USER" >/dev/null 2>&1; then
+		useradd --system --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
+	fi
+
+	# state dir: the resume cursor lives here, owned by the service user
+	install -d -o "$SVC_USER" -g "$SVC_USER" -m 0750 "$LIBDIR"
+
+	# credential env file — root-only, created only if absent so neither a
+	# reinstall nor an upgrade ever overwrites an operator-provided URI.
+	if [ ! -e "$ENVFILE" ]; then
+		umask 077
+		cat >"$ENVFILE" <<'EOF'
+# mongo-journald environment — root-only (0600), not part of the package.
+# Set the writer connection string, then start the service:
+#   systemctl start mongo-journald
+#MONGO_JOURNALD_URI=mongodb://w_syslog:PASS@blue/syslog?authSource=syslog
+MONGO_JOURNALD_URI=
+EOF
+		chmod 600 "$ENVFILE"
+	fi
+
+	if systemd_running; then
+		systemctl daemon-reload || true
+		systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+		if [ -n "$2" ]; then
+			# upgrade ($2 = old version): restart only if already running,
+			# so a configured host picks up the new binary, and an
+			# unconfigured one stays stopped.
+			systemctl try-restart "$SERVICE" || true
+		else
+			# fresh install: do not start until the URI is set.
+			echo "mongo-journald: installed and enabled, but NOT started."
+			echo "  1. set MONGO_JOURNALD_URI in $ENVFILE"
+			echo "  2. systemctl start mongo-journald"
+		fi
+	fi
+	;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+esac
+
+exit 0

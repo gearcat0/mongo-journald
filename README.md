@@ -67,13 +67,47 @@ sudo MONGO_JOURNALD_URI='mongodb://w_syslog:PASS@blue/syslog?authSource=syslog' 
 ```
 
 `install.sh` creates the `mongo-journald` service user (in group `systemd-journal` for journal read),
-installs the binary to `/usr/local/bin`, drops the config and a root-only `env` file, installs
+installs the binary to `/usr/bin`, drops the config and a root-only `env` file, installs
 `mongo-journald.service` (`Restart=always`, hardened), and `enable --now`s it. First run starts at
 "now" (no history backfill); restarts resume from the saved cursor (`/var/lib/mongo-journald/cursor`)
 for at-least-once delivery.
 
 To roll out across hosts, run `install.sh` on each (e.g. from a root loop in the house
-`check_nvm_bun.sh` style).
+`check_nvm_bun.sh` style), or build a `.deb` and install that (below).
+
+## Packaging (`.deb`)
+
+For fleet rollout, build Debian packages instead of running `install.sh` per host. The build
+cross-compiles static binaries for **amd64 + arm64** and wraps each in a `.deb` via
+[`nfpm`](https://nfpm.goreleaser.com):
+
+```sh
+make deb                 # -> dist/mongo-journald_<version>_<arch>.deb  (amd64 + arm64)
+make deb VERSION=0.2.0   # override the version (default 0.1.0)
+```
+
+`nfpm` is the only extra build dependency: `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`.
+
+The package installs the binary to `/usr/bin`, the unit to `/lib/systemd/system`, and `config.json`
+to `/etc/mongo-journald` (a dpkg **conffile** — local edits survive upgrades). The Mongo URI is **not**
+in the package: `postinst` writes a root-only `0600` `/etc/mongo-journald/env` placeholder (only if
+absent), creates the service user and state dir, and **enables but does not start** the unit. So the
+per-host flow is install → set URI → start:
+
+```sh
+sudo apt install ./dist/mongo-journald_0.1.0_amd64.deb   # or: sudo dpkg -i …
+sudoedit /etc/mongo-journald/env                         # set MONGO_JOURNALD_URI=…
+sudo systemctl start mongo-journald
+```
+
+Upgrades (install a newer `.deb`) keep the existing `env` and config and restart the service in place
+only if it was already running. `apt purge` removes the env, state dir, and service user; `apt remove`
+leaves config for a later purge.
+
+Packaging files: `nfpm.yaml` (file map + metadata), `debian/{postinst,prerm,postrm}` (the install
+steps, mirroring `install.sh` minus the secret), `Makefile` (build + package). A tag-driven GoReleaser
++ GitHub Actions tier, and a signed apt repo for `apt update && apt install mongo-journald`, are the
+natural follow-ons.
 
 ## One-time MongoDB setup on `blue`
 
@@ -125,4 +159,5 @@ internal/store/    store.go (Open + ensure TTL/lookup indexes), sink.go (batch/b
 internal/redact/   redact.go (scrub secrets from messages), redact_test.go
 internal/model/    Doc + Record
 mongo-journald.service, install.sh, config_sample.json
+nfpm.yaml, debian/{postinst,prerm,postrm}, Makefile    (.deb packaging)
 ```

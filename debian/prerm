@@ -1,0 +1,18 @@
+#!/bin/sh
+# prerm — stop and disable the unit before its files are removed.
+# On upgrade the running service is left alone; postinst restarts it.
+set -e
+
+SERVICE=mongo-journald.service
+
+case "$1" in
+remove | deconfigure)
+	if [ -d /run/systemd/system ]; then
+		systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+		systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+	fi
+	;;
+upgrade | failed-upgrade) ;;
+esac
+
+exit 0

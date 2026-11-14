@@ -11,7 +11,7 @@ Group=mongo-journald
 # read access to the full journal without running as root
 SupplementaryGroups=systemd-journal
 EnvironmentFile=/etc/mongo-journald/env
-ExecStart=/usr/local/bin/mongo-journald --config /etc/mongo-journald/config.json
+ExecStart=/usr/bin/mongo-journald --config /etc/mongo-journald/config.json
 WorkingDirectory=/var/lib/mongo-journald
 Restart=always
 RestartSec=5
