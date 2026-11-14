@@ -1,0 +1,20 @@
+{
+  "mongo": {
+    "database": "syslog",
+    "collection": "events"
+  },
+  "retention": "60d",
+  "priority": 6,
+  "redact": true,
+  "cursorFile": "/var/lib/mongo-journald/cursor",
+  "units": {
+    "deny": [],
+    "allow": []
+  },
+  "batch": {
+    "size": 500,
+    "buffer": 10000,
+    "flush": "1s"
+  },
+  "rawFields": false
+}

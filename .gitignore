@@ -1,0 +1,5 @@
+# built binary
+/mongo-journald
+# local cursor/state if run from the tree
+/cursor
+*.tmp

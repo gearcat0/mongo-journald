@@ -1,0 +1,34 @@
+[Unit]
+Description=mongo-journald — ship systemd-journald logs to MongoDB
+Documentation=https://github.com/contrailm/mongo-journald
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mongo-journald
+Group=mongo-journald
+# read access to the full journal without running as root
+SupplementaryGroups=systemd-journal
+EnvironmentFile=/etc/mongo-journald/env
+ExecStart=/usr/local/bin/mongo-journald --config /etc/mongo-journald/config.json
+WorkingDirectory=/var/lib/mongo-journald
+Restart=always
+RestartSec=5
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mongo-journald
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
