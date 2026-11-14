@@ -1,0 +1,94 @@
+# GoReleaser — the single source of truth for mongo-journald packaging.
+# https://goreleaser.com
+#
+#   local snapshot:  make deb        (goreleaser release --snapshot --clean)
+#   validate config: make check      (goreleaser check)
+#   release:         push a tag vX.Y.Z -> .github/workflows/release.yml runs
+#                    `goreleaser release`, attaching the .deb packages, raw
+#                    binary tarballs, and checksums to a GitHub Release.
+#
+# The maintainer scripts under debian/ do the install (service user, state
+# dir, 0600 env placeholder, enable-but-not-start); the Mongo URI is never
+# shipped. Keep this in sync with mongo-journald.service and config_sample.json.
+version: 2
+
+project_name: mongo-journald
+
+builds:
+  - id: mongo-journald
+    main: .
+    binary: mongo-journald
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+nfpms:
+  - id: mongo-journald
+    package_name: mongo-journald
+    homepage: https://github.com/gearcat0/mongo-journald
+    maintainer: "mongo-journald maintainers <noreply@example.com>"
+    description: |
+      Ship systemd-journald logs to MongoDB with TTL retention.
+      A per-host daemon that streams journald entries into a MongoDB collection
+      using the same schema and expireAt TTL technique as the mover's events
+      log, so the same mongosh sweeps work against system logs.
+    license: proprietary
+    section: admin
+    priority: optional
+    formats:
+      - deb
+    dependencies:
+      - systemd
+    # the built binary lands here; matches the unit's ExecStart
+    bindir: /usr/bin
+    contents:
+      - src: mongo-journald.service
+        dst: /lib/systemd/system/mongo-journald.service
+        file_info:
+          mode: 0644
+      # dpkg conffile: local edits survive upgrades; env (the secret) is NOT
+      # shipped — postinst creates a 0600 placeholder if absent.
+      - src: config_sample.json
+        dst: /etc/mongo-journald/config.json
+        type: "config|noreplace"
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: debian/postinst
+      preremove: debian/prerm
+      postremove: debian/postrm
+
+archives:
+  - id: binary
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: gearcat0
+    name: mongo-journald
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"

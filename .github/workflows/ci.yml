@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./...
+
+      # install GoReleaser once, then validate the config and do a snapshot
+      # package build so packaging breakage is caught without cutting a tag.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: validate goreleaser config
+        run: goreleaser check
+
+      - name: snapshot package (sanity)
+        run: goreleaser release --snapshot --clean
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-snapshot
+          path: dist/*.deb
+          if-no-files-found: error

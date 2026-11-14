@@ -77,16 +77,26 @@ To roll out across hosts, run `install.sh` on each (e.g. from a root loop in the
 
 ## Packaging (`.deb`)
 
-For fleet rollout, build Debian packages instead of running `install.sh` per host. The build
-cross-compiles static binaries for **amd64 + arm64** and wraps each in a `.deb` via
-[`nfpm`](https://nfpm.goreleaser.com):
+For fleet rollout, build Debian packages instead of running `install.sh` per host.
+[GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`) is the single source of truth for packaging:
+it cross-compiles static binaries for **amd64 + arm64** and wraps each in a `.deb` (plus a raw-binary
+`.tar.gz` and a `checksums.txt`).
+
+**Releases are tag-driven.** Push a semver tag and GitHub Actions (`.github/workflows/release.yml`)
+runs GoReleaser and attaches the artifacts to a GitHub Release — no copying from a build box:
 
 ```sh
-make deb                 # -> dist/mongo-journald_<version>_<arch>.deb  (amd64 + arm64)
-make deb VERSION=0.2.0   # override the version (default 0.1.0)
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
-`nfpm` is the only extra build dependency: `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`.
+**Local build** (same config, snapshot version) needs only GoReleaser
+(`go install github.com/goreleaser/goreleaser/v2@latest`):
+
+```sh
+make deb     # -> dist/*.deb  (amd64 + arm64)   [goreleaser release --snapshot]
+make check   # validate .goreleaser.yaml
+make test    # vet, gofmt, unit tests
+```
 
 The package installs the binary to `/usr/bin`, the unit to `/lib/systemd/system`, and `config.json`
 to `/etc/mongo-journald` (a dpkg **conffile** — local edits survive upgrades). The Mongo URI is **not**
@@ -95,7 +105,7 @@ absent), creates the service user and state dir, and **enables but does not star
 per-host flow is install → set URI → start:
 
 ```sh
-sudo apt install ./dist/mongo-journald_0.1.0_amd64.deb   # or: sudo dpkg -i …
+sudo apt install ./mongo-journald_0.2.0_linux_amd64.deb   # or: sudo dpkg -i …
 sudoedit /etc/mongo-journald/env                         # set MONGO_JOURNALD_URI=…
 sudo systemctl start mongo-journald
 ```
@@ -104,10 +114,10 @@ Upgrades (install a newer `.deb`) keep the existing `env` and config and restart
 only if it was already running. `apt purge` removes the env, state dir, and service user; `apt remove`
 leaves config for a later purge.
 
-Packaging files: `nfpm.yaml` (file map + metadata), `debian/{postinst,prerm,postrm}` (the install
-steps, mirroring `install.sh` minus the secret), `Makefile` (build + package). A tag-driven GoReleaser
-+ GitHub Actions tier, and a signed apt repo for `apt update && apt install mongo-journald`, are the
-natural follow-ons.
+Packaging files: `.goreleaser.yaml` (build + package metadata), `debian/{postinst,prerm,postrm}` (the
+install steps, mirroring `install.sh` minus the secret), `.github/workflows/{ci,release}.yml` (CI runs
+tests + a snapshot package on every push/PR; release fires on a `v*` tag). A signed apt repo for
+`apt update && apt install mongo-journald` is the natural follow-on.
 
 ## One-time MongoDB setup on `blue`
 
@@ -159,5 +169,5 @@ internal/store/    store.go (Open + ensure TTL/lookup indexes), sink.go (batch/b
 internal/redact/   redact.go (scrub secrets from messages), redact_test.go
 internal/model/    Doc + Record
 mongo-journald.service, install.sh, config_sample.json
-nfpm.yaml, debian/{postinst,prerm,postrm}, Makefile    (.deb packaging)
+.goreleaser.yaml, debian/{postinst,prerm,postrm}, Makefile, .github/workflows/  (.deb packaging + CI)
 ```

@@ -1,51 +1,37 @@
-# mongo-journald — build, test, and package .deb for amd64 + arm64.
+# mongo-journald — test, validate, and build .deb packages.
 #
-#   make test      vet, gofmt check, unit tests
-#   make build     cross-compile dist/mongo-journald_<arch>
-#   make deb       build + produce dist/*.deb (needs nfpm)
+#   make test     go vet, gofmt check, unit tests
+#   make check    validate .goreleaser.yaml
+#   make deb      build amd64 + arm64 .deb locally (GoReleaser snapshot -> dist/)
 #   make clean
 #
-# Version: defaults to 0.1.0. Override per build, e.g.
-#   make deb VERSION=0.2.0
-# Tag-driven versioning arrives with the GoReleaser tier.
+# GoReleaser (.goreleaser.yaml) is the single source of truth for packaging,
+# so `make deb` produces the same artifacts CI does. Releases are tag-driven:
+# push a tag like v0.2.0 and .github/workflows/release.yml runs
+# `goreleaser release`, attaching the .deb packages + checksums to a GitHub
+# Release — no manual copying from a build box.
 
-VERSION ?= 0.1.0
-ARCHES  := amd64 arm64
-BIN     := mongo-journald
-DISTDIR := dist
-LDFLAGS := -s -w -X main.version=$(VERSION)
+GO         ?= go
+GORELEASER ?= goreleaser
 
-GO   ?= go
-NFPM ?= nfpm
+.PHONY: all test check deb clean
 
-.PHONY: all test build deb clean
-
-all: deb
+all: test deb
 
 test:
 	$(GO) vet ./...
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	$(GO) test ./...
 
-# one static, stripped binary per arch (pure Go, no cgo)
-$(DISTDIR)/$(BIN)_%:
-	@mkdir -p $(DISTDIR)
-	GOOS=linux GOARCH=$* CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ .
+check:
+	$(GORELEASER) check
 
-build: $(addprefix $(DISTDIR)/$(BIN)_,$(ARCHES))
-
-deb: build
-	@command -v $(NFPM) >/dev/null 2>&1 || { \
-		echo "nfpm not found. Install: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"; \
+deb:
+	@command -v $(GORELEASER) >/dev/null 2>&1 || { \
+		echo "goreleaser not found. Install: go install github.com/goreleaser/goreleaser/v2@latest"; \
 		exit 1; }
-	@mkdir -p $(DISTDIR)
-	@for a in $(ARCHES); do \
-		echo "==> packaging $$a (version $(VERSION))"; \
-		cp $(DISTDIR)/$(BIN)_$$a $(DISTDIR)/$(BIN); \
-		ARCH=$$a VERSION=$(VERSION) $(NFPM) package -f nfpm.yaml -p deb -t $(DISTDIR) || { rm -f $(DISTDIR)/$(BIN); exit 1; }; \
-	done
-	@rm -f $(DISTDIR)/$(BIN)
-	@echo "built:"; ls -1 $(DISTDIR)/*.deb
+	$(GORELEASER) release --snapshot --clean
+	@echo; echo "built:"; ls -1 dist/*.deb
 
 clean:
-	rm -rf $(DISTDIR)
+	rm -rf dist
