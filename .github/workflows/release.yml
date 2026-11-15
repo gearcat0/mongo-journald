@@ -46,6 +46,10 @@ jobs:
     # run after a tag release, and also on manual dispatch (goreleaser skipped)
     if: always() && (needs.goreleaser.result == 'success' || needs.goreleaser.result == 'skipped')
     runs-on: ubuntu-latest
+    # The signing key + R2 creds live in this GitHub Environment, whose
+    # deployment rule restricts it to release refs (v* tags + master). That
+    # pins the package-signing key so no other branch can reach it.
+    environment: release
     env:
       # R2 is S3-compatible; region is always "auto".
       AWS_DEFAULT_REGION: auto

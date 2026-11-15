@@ -48,9 +48,21 @@ In the Cloudflare dashboard (the `satoshi.in.th` zone is already there):
    and your **Account ID** (shown in the R2 endpoint
    `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`).
 
-### 3. GitHub Actions secrets
+### 3. GitHub Actions secrets (in an Environment)
 
-On `gearcat0/mongo-journald` → Settings → Secrets and variables → Actions:
+These are **environment** secrets, not repository secrets, so the signing key
+can only be used from release refs. On `gearcat0/mongo-journald` → Settings →
+**Environments → New environment** → name it **`release`**, then:
+
+- **Deployment branches and tags → Selected** → add `v*` and `master`. This is
+  the point of using an environment: the `apt-publish` job declares
+  `environment: release` (see `release.yml`), so the signing key is reachable
+  only from a `v*` tag push or a `master` `workflow_dispatch`, never from an
+  arbitrary branch or PR.
+- *(optional)* **Required reviewers** → adds a manual approval gate before each
+  publish. Leave off for hands-free tag releases; turn on if you want to click
+  to approve every push to the public repo.
+- Add the secrets under this environment (Environment secrets → Add secret):
 
 | secret | value |
 |---|---|
@@ -60,6 +72,11 @@ On `gearcat0/mongo-journald` → Settings → Secrets and variables → Actions:
 | `R2_BUCKET` | the bucket name, e.g. `apt-satoshi` |
 | `R2_ACCESS_KEY_ID` | R2 token access key id |
 | `R2_SECRET_ACCESS_KEY` | R2 token secret access key |
+
+`R2_ACCOUNT_ID` and `R2_BUCKET` aren't truly secret (the account id is in the
+public R2 endpoint, the bucket is just a name) — fine to keep here, or make them
+environment *variables* instead. The four that matter are the GPG key, its
+passphrase, and the two R2 keys.
 
 ### 4. First publish
 
