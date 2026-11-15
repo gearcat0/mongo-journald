@@ -116,8 +116,28 @@ leaves config for a later purge.
 
 Packaging files: `.goreleaser.yaml` (build + package metadata), `debian/{postinst,prerm,postrm}` (the
 install steps, mirroring `install.sh` minus the secret), `.github/workflows/{ci,release}.yml` (CI runs
-tests + a snapshot package on every push/PR; release fires on a `v*` tag). A signed apt repo for
-`apt update && apt install mongo-journald` is the natural follow-on.
+tests + a snapshot package on every push/PR; release fires on a `v*` tag).
+
+### apt repo (recommended for fleets)
+
+A public signed apt repo at **https://apt.satoshi.in.th** (static files on Cloudflare R2, rebuilt and
+signed by CI on every release) gives hosts the simplest path — `apt install` + `apt upgrade`:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://apt.satoshi.in.th/pubkey.asc | sudo gpg --dearmor -o /etc/apt/keyrings/mongo-journald-apt.gpg
+sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://apt.satoshi.in.th
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/mongo-journald-apt.gpg
+EOF
+sudo apt-get update && sudo apt-get install mongo-journald
+```
+
+Setup, signing, and the publish pipeline are documented in [`aptrepo/README.md`](aptrepo/README.md).
 
 ## One-time MongoDB setup (on the Mongo host)
 

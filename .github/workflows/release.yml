@@ -2,19 +2,27 @@ name: release
 
 # Cut a release by pushing a semver tag:
 #   git tag v0.2.0 && git push origin v0.2.0
-# GoReleaser then builds amd64 + arm64, packages the .deb files, and attaches
-# them (plus raw binary tarballs and checksums.txt) to a GitHub Release.
+# GoReleaser builds amd64 + arm64, packages the .deb files, and attaches them
+# (plus raw binary tarballs and checksums.txt) to a GitHub Release. The
+# apt-publish job then rebuilds the signed apt repo from all releases and
+# syncs it to Cloudflare R2 (served at apt.satoshi.in.th).
+#
+# Manual run (workflow_dispatch) skips GoReleaser and only (re)publishes the
+# apt repo from existing releases — use it to back-fill or repair the repo.
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 permissions:
-  contents: write # create the GitHub Release and upload assets
+  contents: write # create the GitHub Release and read release assets
 
 jobs:
   goreleaser:
+    # only when triggered by a tag; skipped on manual dispatch
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,3 +40,66 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  apt-publish:
+    needs: [goreleaser]
+    # run after a tag release, and also on manual dispatch (goreleaser skipped)
+    if: always() && (needs.goreleaser.result == 'success' || needs.goreleaser.result == 'skipped')
+    runs-on: ubuntu-latest
+    env:
+      # R2 is S3-compatible; region is always "auto".
+      AWS_DEFAULT_REGION: auto
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      # aws-cli v2's default integrity checksums are rejected by R2; only send
+      # them when the operation requires it.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install repo tooling
+        run: sudo apt-get update && sudo apt-get install -y apt-utils dpkg-dev
+
+      - name: import signing key
+        run: |
+          echo "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
+          echo "GPG_KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" >> "$GITHUB_ENV"
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+
+      - name: download every release .deb
+        run: |
+          mkdir -p incoming
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName'); do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir incoming --skip-existing || true
+          done
+          echo "collected:"; ls -1 incoming
+
+      - name: build + sign repo
+        run: aptrepo/build-repo.sh out incoming
+        env:
+          ORIGIN: satoshi.in.th
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }} # empty if the key has none
+
+      - name: export public key for clients
+        run: gpg --armor --export "$GPG_KEY_ID" > out/pubkey.asc
+
+      - name: publish to Cloudflare R2
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # immutable packages: cache hard
+          aws s3 sync out/pool "s3://${R2_BUCKET}/pool" \
+            --endpoint-url "$endpoint" --no-progress \
+            --cache-control 'public, max-age=31536000, immutable'
+          # indexes + key: revalidate so a new release is seen immediately;
+          # --delete prunes stale index files.
+          aws s3 sync out/dists "s3://${R2_BUCKET}/dists" \
+            --endpoint-url "$endpoint" --no-progress --delete \
+            --cache-control 'no-cache'
+          aws s3 cp out/pubkey.asc "s3://${R2_BUCKET}/pubkey.asc" \
+            --endpoint-url "$endpoint" --cache-control 'no-cache'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
