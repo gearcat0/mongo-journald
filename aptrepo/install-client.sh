@@ -7,7 +7,7 @@
 set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://apt.satoshi.in.th}
-KEYRING=/etc/apt/keyrings/mongo-journald-apt.gpg
+KEYRING=/etc/apt/keyrings/mongo-journald.asc
 SOURCES=/etc/apt/sources.list.d/mongo-journald.sources
 
 [ "$(id -u)" -eq 0 ] || {
@@ -24,8 +24,8 @@ if command -v curl >/dev/null 2>&1; then
 else
 	wget -qO "$tmp" "$REPO_URL/pubkey.asc"
 fi
-gpg --dearmor <"$tmp" >"$KEYRING"
-chmod 0644 "$KEYRING"
+# store the armored key as-is; apt reads a .asc key directly via Signed-By (no gnupg needed)
+install -m 0644 "$tmp" "$KEYRING"
 
 cat >"$SOURCES" <<EOF
 X-Repolib-Name: mongo-journald

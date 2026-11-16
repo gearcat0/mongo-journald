@@ -121,23 +121,36 @@ tests + a snapshot package on every push/PR; release fires on a `v*` tag).
 ### apt repo (recommended for fleets)
 
 A public signed apt repo at **https://apt.satoshi.in.th** (static files on Cloudflare R2, rebuilt and
-signed by CI on every release) gives hosts the simplest path — `apt install` + `apt upgrade`:
+signed by CI on every release) gives hosts the simplest path — `apt install` + `apt upgrade`. The
+steps below assume nothing on the host but a working `apt`: no checked-out repo, and no `gnupg` (the
+signing key is stored armored and apt reads it directly).
 
 ```sh
-sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
-curl -fsSL https://apt.satoshi.in.th/pubkey.asc | sudo gpg --dearmor -o /etc/apt/keyrings/mongo-journald-apt.gpg
-sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null <<'EOF'
-Types: deb
-URIs: https://apt.satoshi.in.th
-Suites: stable
-Components: main
-Architectures: amd64 arm64
-Signed-By: /etc/apt/keyrings/mongo-journald-apt.gpg
-EOF
-sudo apt-get update && sudo apt-get install mongo-journald
+# 1. prerequisites (usually already present on Ubuntu; a no-op if so)
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+
+# 2. install the repo signing key (armored .asc — apt reads it directly, no gnupg)
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://apt.satoshi.in.th/pubkey.asc -o /etc/apt/keyrings/mongo-journald.asc
+
+# 3. register the repo (one printf, no heredoc — pastes cleanly over SSH)
+printf '%s\n' 'Types: deb' 'URIs: https://apt.satoshi.in.th' 'Suites: stable' 'Components: main' 'Architectures: amd64 arm64' 'Signed-By: /etc/apt/keyrings/mongo-journald.asc' | sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null
+
+# 4. install
+sudo apt-get update
+sudo apt-get install -y mongo-journald
 ```
 
-Setup, signing, and the publish pipeline are documented in [`aptrepo/README.md`](aptrepo/README.md).
+Then set the Mongo URI and start it (the package installs enabled-but-stopped):
+
+```sh
+sudoedit /etc/mongo-journald/env       # set MONGO_JOURNALD_URI=…
+sudo systemctl start mongo-journald
+```
+
+Upgrades ride along with the host's normal `apt upgrade`. Repo setup, signing, and the publish
+pipeline are documented in [`aptrepo/README.md`](aptrepo/README.md).
 
 ## One-time MongoDB setup (on the Mongo host)
 

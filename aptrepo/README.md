@@ -93,26 +93,25 @@ and `dists/` + `pubkey.asc` (no-cache, so new releases appear at once) to R2.
 
 ## Install on a host
 
+Nothing needs to be on the host but a working `apt` — no checked-out repo, and no `gnupg` (the
+signing key is stored armored and apt reads it directly):
+
 ```sh
-curl -fsSL https://apt.satoshi.in.th/aptrepo/install-client.sh | sudo bash   # if you mirror this script, or:
-sudo REPO_URL=https://apt.satoshi.in.th aptrepo/install-client.sh
+# prerequisites (usually already present on Ubuntu; a no-op if so)
+sudo apt-get update && sudo apt-get install -y ca-certificates curl
+# signing key, armored — apt reads .asc directly, no gnupg needed
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://apt.satoshi.in.th/pubkey.asc -o /etc/apt/keyrings/mongo-journald.asc
+# repo definition — one printf, no heredoc to mangle when pasted over SSH
+printf '%s\n' 'Types: deb' 'URIs: https://apt.satoshi.in.th' 'Suites: stable' 'Components: main' 'Architectures: amd64 arm64' 'Signed-By: /etc/apt/keyrings/mongo-journald.asc' | sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null
+# install
+sudo apt-get update && sudo apt-get install -y mongo-journald
 ```
 
-Or by hand:
+If you happen to have this repo checked out, `aptrepo/install-client.sh` does exactly the same:
 
 ```sh
-sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
-curl -fsSL https://apt.satoshi.in.th/pubkey.asc | sudo gpg --dearmor -o /etc/apt/keyrings/mongo-journald-apt.gpg
-sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null <<'EOF'
-Types: deb
-URIs: https://apt.satoshi.in.th
-Suites: stable
-Components: main
-Architectures: amd64 arm64
-Signed-By: /etc/apt/keyrings/mongo-journald-apt.gpg
-EOF
-sudo apt-get update
-sudo apt-get install mongo-journald
+sudo REPO_URL=https://apt.satoshi.in.th aptrepo/install-client.sh
 ```
 
 Then set the URI and start it (the package installs enabled-but-stopped):
