@@ -101,7 +101,7 @@ sudo REPO_URL=https://apt.satoshi.in.th aptrepo/install-client.sh
 Or by hand:
 
 ```sh
-sudo install -d -m 0755 /etc/apt/keyrings
+sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
 curl -fsSL https://apt.satoshi.in.th/pubkey.asc | sudo gpg --dearmor -o /etc/apt/keyrings/mongo-journald-apt.gpg
 sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null <<'EOF'
 Types: deb

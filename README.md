@@ -124,7 +124,7 @@ A public signed apt repo at **https://apt.satoshi.in.th** (static files on Cloud
 signed by CI on every release) gives hosts the simplest path — `apt install` + `apt upgrade`:
 
 ```sh
-sudo install -d -m 0755 /etc/apt/keyrings
+sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
 curl -fsSL https://apt.satoshi.in.th/pubkey.asc | sudo gpg --dearmor -o /etc/apt/keyrings/mongo-journald-apt.gpg
 sudo tee /etc/apt/sources.list.d/mongo-journald.sources >/dev/null <<'EOF'
 Types: deb

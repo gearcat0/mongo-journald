@@ -15,7 +15,7 @@ SOURCES=/etc/apt/sources.list.d/mongo-journald.sources
 	exit 1
 }
 
-install -d -m 0755 /etc/apt/keyrings
+install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
