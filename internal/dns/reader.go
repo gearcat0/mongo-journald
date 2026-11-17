@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -84,14 +85,21 @@ func (r *Reader) Run(ctx context.Context, out chan<- model.Record) error {
 		}
 		started := time.Now()
 		perr := r.pump(ctx, stdout, out)
-		_ = cmd.Wait()
+		werr := cmd.Wait()
 		if ctx.Err() != nil {
 			return nil
 		}
 		if time.Since(started) > time.Minute {
 			backoff = time.Second // it ran fine for a while; restart promptly
 		}
-		r.notify("resolvectl monitor exited (%v); restarting in %s", perr, backoff)
+		why := werr // the exit status (resolvectl prints its reason to stderr)
+		if why == nil {
+			why = perr
+		}
+		if why == nil {
+			why = errors.New("exited cleanly")
+		}
+		r.notify("resolvectl monitor stopped (%v); restarting in %s", why, backoff)
 		select {
 		case <-ctx.Done():
 			return nil

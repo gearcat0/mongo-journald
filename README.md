@@ -76,8 +76,9 @@ raw data. Neither mode has a resume cursor: whatever happens while a unit is sto
 ### `--mode dns` → `dns`, `dns_hourly`
 
 Source: `resolvectl monitor --json=short`, systemd-resolved's stream of every lookup it answers,
-cache hits included. Needs systemd ≥ 254 (the fleet runs 255/259). The unit runs as **root with no
-capabilities**, because resolved's monitor socket only answers root.
+cache hits included. Needs systemd ≥ 254 (the fleet runs 255/259). The unit runs as **root, keeping
+only `CAP_DAC_OVERRIDE`**: resolved's monitor only answers root, and its socket is owned by
+`systemd-resolve`.
 
 | field | notes |
 |---|---|

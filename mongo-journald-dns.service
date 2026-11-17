@@ -7,7 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 # root: resolved's query monitor (io.systemd.Resolve.Monitor, used by
-# `resolvectl monitor`) only answers root. No capabilities are kept.
+# `resolvectl monitor`) only answers root. The socket itself is owned by
+# systemd-resolve, so connecting to it also needs CAP_DAC_OVERRIDE; that
+# is the only capability kept.
 User=root
 EnvironmentFile=/etc/mongo-journald/env
 ExecStart=/usr/bin/mongo-journald --config /etc/mongo-journald/config.json --mode dns
@@ -15,7 +17,7 @@ Restart=always
 RestartSec=5
 
 # hardening
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
