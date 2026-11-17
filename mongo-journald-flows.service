@@ -1,0 +1,38 @@
+[Unit]
+Description=mongo-journald (flows) — ship conntrack network flows to MongoDB
+Documentation=https://github.com/gearcat0/mongo-journald
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/mongo-journald/env
+# Before start, with full privileges ("+"; "-" = failure is not fatal):
+# load conntrack and turn on per-flow byte/packet counters and start/stop
+# timestamps. These are set only on hosts that run this unit.
+ExecStartPre=-+/usr/sbin/modprobe -q nf_conntrack
+ExecStartPre=-+/usr/sbin/sysctl -q -w net.netfilter.nf_conntrack_acct=1 net.netfilter.nf_conntrack_timestamp=1
+ExecStart=/usr/bin/mongo-journald --config /etc/mongo-journald/config.json --mode flows
+Restart=always
+RestartSec=5
+
+# CAP_NET_ADMIN: subscribe to conntrack events. CAP_SYS_PTRACE +
+# CAP_DAC_READ_SEARCH: read other processes' /proc/<pid>/fd to map socket
+# inodes to processes (process attribution; set "proc": false to skip).
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

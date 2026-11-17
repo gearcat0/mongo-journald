@@ -16,5 +16,20 @@
     "buffer": 10000,
     "flush": "1s"
   },
-  "rawFields": false
+  "rawFields": false,
+  "dns": {
+    "retention": "3d",
+    "rollupRetention": "60d",
+    "ignore": []
+  },
+  "flows": {
+    "retention": "3d",
+    "rollupRetention": "60d",
+    "proc": true,
+    "includeLoopback": false,
+    "ignore": {
+      "cidrs": [],
+      "ports": []
+    }
+  }
 }

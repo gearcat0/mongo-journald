@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -24,6 +25,8 @@ type Config struct {
 	Units      UnitFilter  `json:"units"`
 	Batch      BatchConfig `json:"batch"`
 	RawFields  bool        `json:"rawFields"`
+	DNS        DNSConfig   `json:"dns"`   // --mode dns
+	Flows      FlowsConfig `json:"flows"` // --mode flows
 
 	// derived
 	priority   int
@@ -38,6 +41,38 @@ type MongoConfig struct {
 	URI        string `json:"uri"`
 	Database   string `json:"database"`
 	Collection string `json:"collection"`
+}
+
+// StreamConfig is shared by the dns and flows modes: a raw collection
+// with short retention plus an hourly rollup collection kept longer.
+type StreamConfig struct {
+	Collection       string `json:"collection"`
+	RollupCollection string `json:"rollupCollection"`
+	Retention        string `json:"retention"`       // raw docs; default "3d"
+	RollupRetention  string `json:"rollupRetention"` // hourly rollups; default "60d"
+
+	retention, rollupRetention time.Duration
+}
+
+// DNSConfig configures --mode dns (systemd-resolved lookups).
+type DNSConfig struct {
+	StreamConfig
+	Ignore []string `json:"ignore"` // qname suffixes to drop, e.g. "ts.net"
+}
+
+// FlowsConfig configures --mode flows (conntrack flows).
+type FlowsConfig struct {
+	StreamConfig
+	Proc            *bool `json:"proc"`            // attribute flows to processes (default true)
+	IncludeLoopback bool  `json:"includeLoopback"` // default false
+	Ignore          struct {
+		CIDRs []string `json:"cidrs"` // drop flows with either endpoint inside
+		Ports []int    `json:"ports"` // drop flows to these service ports
+	} `json:"ignore"`
+
+	proc        bool
+	ignoreNets  []netip.Prefix
+	ignorePorts map[uint16]bool
 }
 
 type UnitFilter struct {
@@ -109,7 +144,62 @@ func LoadConfig(path string) (*Config, error) {
 
 	c.denySet = toSet(c.Units.Deny)
 	c.allowSet = toSet(c.Units.Allow)
+
+	if err := c.DNS.fill("dns", "dns", "dns_hourly"); err != nil {
+		return nil, err
+	}
+	if err := c.Flows.fill("flows", "flows", "flows_hourly"); err != nil {
+		return nil, err
+	}
+	c.Flows.proc = true
+	if c.Flows.Proc != nil {
+		c.Flows.proc = *c.Flows.Proc
+	}
+	for _, s := range c.Flows.Ignore.CIDRs {
+		p, err := netip.ParsePrefix(strings.TrimSpace(s))
+		if err != nil {
+			if a, aerr := netip.ParseAddr(strings.TrimSpace(s)); aerr == nil {
+				p = netip.PrefixFrom(a, a.BitLen())
+			} else {
+				return nil, fmt.Errorf("flows.ignore.cidrs: %w", err)
+			}
+		}
+		c.Flows.ignoreNets = append(c.Flows.ignoreNets, p.Masked())
+	}
+	if len(c.Flows.Ignore.Ports) > 0 {
+		c.Flows.ignorePorts = map[uint16]bool{}
+		for _, p := range c.Flows.Ignore.Ports {
+			if p < 1 || p > 65535 {
+				return nil, fmt.Errorf("flows.ignore.ports: %d out of range", p)
+			}
+			c.Flows.ignorePorts[uint16(p)] = true
+		}
+	}
 	return c, nil
+}
+
+func (s *StreamConfig) fill(name, coll, rollup string) error {
+	if s.Collection == "" {
+		s.Collection = coll
+	}
+	if s.RollupCollection == "" {
+		s.RollupCollection = rollup
+	}
+	var err error
+	if s.retention, err = retentionOr(s.Retention, 3*day); err != nil {
+		return fmt.Errorf("%s.retention: %w", name, err)
+	}
+	if s.rollupRetention, err = retentionOr(s.RollupRetention, 60*day); err != nil {
+		return fmt.Errorf("%s.rollupRetention: %w", name, err)
+	}
+	return nil
+}
+
+func retentionOr(s string, def time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(s) == "" {
+		return def, nil
+	}
+	return ParseRetention(s)
 }
 
 // ParseRetention parses "48h", "90m", "60d" or "forever"/"0" (keep

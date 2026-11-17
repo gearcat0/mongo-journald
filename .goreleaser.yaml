@@ -9,7 +9,8 @@
 #
 # The maintainer scripts under debian/ do the install (service user, state
 # dir, 0600 env placeholder, enable-but-not-start); the Mongo URI is never
-# shipped. Keep this in sync with mongo-journald.service and config_sample.json.
+# shipped. Keep this in sync with the mongo-journald*.service units and
+# config_sample.json.
 version: 2
 
 project_name: mongo-journald
@@ -40,7 +41,9 @@ nfpms:
       Ship systemd-journald logs to MongoDB with TTL retention.
       A per-host daemon that streams journald entries into a MongoDB collection
       using the same schema and expireAt TTL technique as the mover's events
-      log, so the same mongosh sweeps work against system logs.
+      log, so the same mongosh sweeps work against system logs. Optional
+      units also ship systemd-resolved DNS lookups and conntrack network
+      flows (with owning process) plus hourly rollups.
     license: proprietary
     section: admin
     priority: optional
@@ -53,6 +56,15 @@ nfpms:
     contents:
       - src: mongo-journald.service
         dst: /lib/systemd/system/mongo-journald.service
+        file_info:
+          mode: 0644
+      # optional units (installed disabled): DNS lookups and network flows
+      - src: mongo-journald-dns.service
+        dst: /lib/systemd/system/mongo-journald-dns.service
+        file_info:
+          mode: 0644
+      - src: mongo-journald-flows.service
+        dst: /lib/systemd/system/mongo-journald-flows.service
         file_info:
           mode: 0644
       # dpkg conffile: local edits survive upgrades; env (the secret) is NOT

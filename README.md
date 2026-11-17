@@ -39,10 +39,11 @@ it comes from `MONGO_JOURNALD_URI` so credentials stay out of config:
 MONGO_JOURNALD_URI=mongodb://w_syslog:PASS@MONGO_HOST/syslog?authSource=syslog
 ```
 
-Key options: `priority` (syslog floor, default `6` = info and above, drops debug), `retention`
+Key options (journal mode): `priority` (syslog floor, default `6` = info and above, drops debug), `retention`
 (`60d`/`48h`/`forever`), `redact` (scrub secrets from messages, default `true`),
 `units.deny`/`units.allow`, `batch.{size,buffer,flush}`, `rawFields` (keep every journald field under
-`fields`; off by default), `hostname` (override the host tag).
+`fields`; off by default), `hostname` (override the host tag). The `dns` and `flows` sections configure
+the optional modes ([below](#dns-lookups-and-network-flows-optional)).
 
 ### Redaction
 
@@ -57,6 +58,96 @@ conservative — it rewrites only recognised secrets and leaves ordinary log tex
 
 Note: `rawFields` keeps the full journald field set unredacted, so leave `redact` on if you enable it,
 and prefer not enabling `rawFields` on hosts with sensitive logs.
+
+## DNS lookups and network flows (optional)
+
+Two more modes of the same binary ship network telemetry into their own collections in the same
+database. Each runs as its own systemd unit, installed **disabled** because both need privileges and
+produce far more data than syslog:
+
+```sh
+sudo systemctl enable --now mongo-journald-dns mongo-journald-flows   # uses the same env file
+```
+
+Each mode writes **raw** documents (default retention `3d`) and **hourly rollups** (default `60d`).
+The rollups are per-host `$inc` counters that the daemon upserts every minute, so summaries outlive the
+raw data. Neither mode has a resume cursor: whatever happens while a unit is stopped is not recorded.
+
+### `--mode dns` → `dns`, `dns_hourly`
+
+Source: `resolvectl monitor --json=short`, systemd-resolved's stream of every lookup it answers,
+cache hits included. Needs systemd ≥ 254 (the fleet runs 255/259). The unit runs as **root with no
+capabilities**, because resolved's monitor socket only answers root.
+
+| field | notes |
+|---|---|
+| `at`, `server`, `expireAt` | as for events |
+| `qname`, `qtype` | lowercased, no trailing dot; `A`, `AAAA`, `MX`, … |
+| `state` | resolved's result: `success`, `rcode-failure`, `timeout`, `no-servers`, … |
+| `rcode` | `NOERROR` on success, else the server's rcode (`NXDOMAIN`, `SERVFAIL`, …) |
+| `answers` | `[{name, type, data, ttl}]` (decoded from the wire-format RR) |
+| `cname` | first CNAME target, when there is one |
+
+`dns_hourly`: `{server, hour, qname, qtype, rcode, n}`. Failed lookups other than rcode failures use
+the `state` as the `rcode`.
+
+Gaps: resolved doesn't record *which process* asked. Programs that query a DNS server directly
+(bypassing `127.0.0.53`) are not seen here, but their port-53 traffic shows up in `flows`. Config:
+`dns.ignore` lists name suffixes to drop (e.g. `"ts.net"`).
+
+### `--mode flows` → `flows`, `flows_hourly`
+
+Source: the kernel's conntrack NEW/DESTROY netlink events. Each document is one **finished**
+connection (TCP, UDP or ICMP), written when conntrack destroys the entry. A connection that stays open
+for days is only written once it closes. The unit runs as root with
+`CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Before starting it loads `nf_conntrack` and sets
+`net.netfilter.nf_conntrack_acct=1` (byte/packet counters) and `nf_conntrack_timestamp=1` (start/stop
+times), but only on hosts that run this unit.
+
+| field | notes |
+|---|---|
+| `at`, `start`, `dur_ms` | end time, start time, duration |
+| `dir` | `out` (this host initiated), `in` (to a local socket), `fwd` (routed/NATed, e.g. containers) |
+| `proto`, `src`, `sport`, `dst`, `dport` | the original (initiator → responder) tuple |
+| `peer`, `port` | the remote IP and the service port (`dport`), for easy querying |
+| `tx_bytes`, `rx_bytes`, `tx_pkts`, `rx_pkts` | from this host's side (`fwd`: tx = initiator → responder) |
+| `replied`, `tcp_state`, `nat`, `icmp_type`/`icmp_code` | final TCP state (`SYN_SENT` = never answered), etc. |
+| `proc` | `{pid, comm, exe, uid, unit}` of the local process that owns the socket — best effort |
+
+**Process attribution.** Conntrack does not know which process owns a connection, so the daemon finds
+out when the flow is NEW. Every 100 ms it matches pending flows to sockets via `sock_diag`: first the
+exact 4-tuple, then a listener or unbound UDP socket on the local port. It then maps the socket inode
+to a pid using a cache built from `/proc/*/fd`, rescanned on a miss at most every 500 ms, and reads
+`comm`, `exe` and the systemd unit from `/proc/<pid>`. Connections that close before the next round,
+forwarded traffic and ICMP get no `proc`. Inbound flows are attributed to the accepted socket's owner,
+or to the listener (the server's main process) if the socket hasn't been accepted yet. Every 10 minutes
+the daemon logs what share of local flows got a process. Set `flows.proc: false` to turn this off.
+
+`flows_hourly`: `{server, hour, dir, proto, peer, port, comm, unit, flows, tx_bytes, rx_bytes}`.
+
+Config: `flows.ignore.cidrs` (drop flows with either endpoint inside), `flows.ignore.ports` (drop
+flows to these service ports), and `flows.includeLoopback` (default `false`).
+
+Volume: expect far more documents than `events`. Busy hosts make thousands of short connections an
+hour, and Tailscale keeps many UDP flows alive. Check the rate on one host before rolling out, and use
+`ignore` for noise you will never query.
+
+### Queries
+
+```js
+// who resolved a name, and when
+db.dns.find({qname: /(^|\.)example\.com$/}).sort({at: -1}).limit(20)
+// top domains per host, last 7 days (rollups)
+db.dns_hourly.aggregate([{$match: {hour: {$gte: new Date(Date.now() - 7*864e5)}}},
+  {$group: {_id: {s: "$server", q: "$qname"}, n: {$sum: "$n"}}}, {$sort: {n: -1}}, {$limit: 20}])
+// which process talked to an IP
+db.flows.find({peer: "203.0.113.9"}, {at: 1, server: 1, dir: 1, port: 1, proc: 1})
+// top talkers by bytes out, per process, last 24h
+db.flows_hourly.aggregate([{$match: {hour: {$gte: new Date(Date.now() - 864e5)}, dir: "out"}},
+  {$group: {_id: {s: "$server", comm: "$comm", peer: "$peer"}, tx: {$sum: "$tx_bytes"}}}, {$sort: {tx: -1}}, {$limit: 20}])
+// outbound DNS that bypassed resolved
+db.flows.find({port: 53, dir: "out", "proc.comm": {$ne: "systemd-resolve"}})
+```
 
 ## Run / deploy
 
@@ -167,7 +258,9 @@ Indexes (TTL + lookups) are created by the daemon at startup — no provisioning
 
 **Security:** system logs can contain usernames, IPs, command lines and occasional secrets, and they
 plus the Mongo credentials cross the network to the Mongo host. Enable TLS on `mongod`, require auth, and
-firewall it to the tailnet. Consider shortening `retention` for auth-heavy hosts.
+firewall it to the tailnet. Consider shortening `retention` for auth-heavy hosts. The `dns` and `flows` collections are a
+browsing and connection history of every host (names looked up, peers, owning processes), so treat
+read access to them, including `r_syslog`, as sensitive.
 
 ## Verify
 
@@ -195,12 +288,16 @@ sudo systemctl start mongo-journald
 ## Layout
 
 ```
-main.go            flags, wiring, graceful shutdown, cursor persistence
-config.go          config + ParseRetention (60d/forever syntax)
+main.go            flags (--mode), wiring, graceful shutdown, cursor persistence
+stream.go          --mode dns|flows wiring: sink + hourly rollup
+config.go          config (+ dns/flows sections) + ParseRetention (60d/forever syntax)
 internal/journal/  reader.go (journalctl --follow + resume), doc.go (journald→doc), doc_test.go
+internal/dns/      reader.go (resolvectl monitor), doc.go (monitor JSON→doc), testdata/
+internal/flows/    conntrack.go (netlink events, filter), doc.go (flow→doc), attrib.go + procfs.go (process attribution)
+internal/rollup/   rollup.go (hourly $inc upserts)
 internal/store/    store.go (Open + ensure TTL/lookup indexes), sink.go (batch/backpressure/retry)
 internal/redact/   redact.go (scrub secrets from messages), redact_test.go
 internal/model/    Doc + Record
-mongo-journald.service, install.sh, config_sample.json
+mongo-journald.service, mongo-journald-{dns,flows}.service, install.sh, config_sample.json
 .goreleaser.yaml, debian/{postinst,prerm,postrm}, Makefile, .github/workflows/  (.deb packaging + CI)
 ```
