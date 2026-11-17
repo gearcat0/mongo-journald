@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -45,9 +46,10 @@ func Build(msg map[string]any, server string, now time.Time, retention time.Dura
 	if rc, ok := rcode(msg, state); ok {
 		doc["rcode"] = rc
 	}
-	if e, ok := msg["errno"]; ok {
-		if n, ok := toInt(e); ok {
-			doc["errno"] = n
+	if n, ok := toInt(msg["errno"]); ok {
+		doc["errno"] = n
+		if n > 0 {
+			doc["error"] = syscall.Errno(n).Error() // e.g. 113 → "no route to host"
 		}
 	}
 	if ede, ok := toInt(msg["extendedDNSErrorCode"]); ok {
@@ -64,10 +66,27 @@ func Build(msg map[string]any, server string, now time.Time, retention time.Dura
 		}
 		doc["answers"] = answers
 	}
+	// NODATA: the name exists but has no record of the asked type; resolved
+	// then returns only the zone's SOA (negative-caching TTL).
+	if state == "success" && !hasType(doc["answers"], doc["qtype"].(string)) {
+		doc["nodata"] = true
+	}
 	if retention > 0 {
 		doc["expireAt"] = doc["at"].(time.Time).Add(retention)
 	}
 	return doc, true
+}
+
+// hasType reports whether any answer is of type t or a CNAME (which a
+// resolver follows towards t).
+func hasType(answers any, t string) bool {
+	as, _ := answers.([]model.Doc)
+	for _, a := range as {
+		if a["type"] == t || a["type"] == "CNAME" {
+			return true
+		}
+	}
+	return false
 }
 
 // NormName lowercases a DNS name and drops the trailing root dot.
