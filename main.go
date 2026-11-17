@@ -1,6 +1,10 @@
 // Command mongo-journald ships systemd-journald logs from the local host
 // into MongoDB, mirroring the mover's events schema and TTL retention so
 // the same mongosh sweeps work against system logs.
+//
+// --mode dns and --mode flows instead ship systemd-resolved lookups and
+// conntrack network flows (each run as its own systemd unit) into their
+// own collections, plus hourly rollups.
 package main
 
 import (
@@ -26,6 +30,7 @@ var version = "0.1.0"
 
 func main() {
 	cfgPath := flag.String("config", "/etc/mongo-journald/config.json", "path to config JSON")
+	mode := flag.String("mode", "journal", "what to ship: journal (journald logs), dns (resolved lookups), flows (conntrack flows)")
 	dryRun := flag.Bool("dry-run", false, "map and print docs as JSON to stdout; do not connect to Mongo")
 	stdin := flag.Bool("stdin", false, "read journald JSON (one object per line) from stdin instead of journalctl")
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -49,6 +54,15 @@ func main() {
 	host := cfg.Hostname
 	if host == "" {
 		host, _ = os.Hostname()
+	}
+
+	switch *mode {
+	case "journal":
+	case "dns", "flows":
+		os.Exit(runStream(*mode, cfg, host, *dryRun, *stdin, logf))
+	default:
+		logf("unknown --mode %q (want journal, dns or flows)", *mode)
+		os.Exit(2)
 	}
 
 	ropt := journal.Options{
@@ -92,7 +106,7 @@ func main() {
 			os.Exit(1)
 		}
 		ictx, icancel := context.WithTimeout(context.Background(), time.Minute)
-		if err := store.EnsureIndexes(ictx, db, cfg.Mongo.Collection); err != nil {
+		if err := store.EnsureIndexes(ictx, db, cfg.Mongo.Collection, store.EventIndexes...); err != nil {
 			logf("ensure indexes on %s.%s: %v (continuing)", cfg.Mongo.Database, cfg.Mongo.Collection, err)
 		}
 		icancel()

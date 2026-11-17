@@ -1,15 +1,15 @@
 #!/bin/sh
-# prerm — stop and disable the unit before its files are removed.
+# prerm — stop and disable the units before their files are removed.
 # On upgrade the running service is left alone; postinst restarts it.
 set -e
 
-SERVICE=mongo-journald.service
+SERVICES="mongo-journald.service mongo-journald-dns.service mongo-journald-flows.service"
 
 case "$1" in
 remove | deconfigure)
 	if [ -d /run/systemd/system ]; then
-		systemctl stop "$SERVICE" >/dev/null 2>&1 || true
-		systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+		systemctl stop $SERVICES >/dev/null 2>&1 || true
+		systemctl disable $SERVICES >/dev/null 2>&1 || true
 	fi
 	;;
 upgrade | failed-upgrade) ;;

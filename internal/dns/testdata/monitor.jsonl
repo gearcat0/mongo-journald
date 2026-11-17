@@ -1,0 +1,8 @@
+{"ready":true}
+{"state":"success","question":[{"class":1,"type":1,"name":"www.github.com"}],"collectedQuestions":[{"class":1,"type":1,"name":"www.github.com"},{"class":1,"type":1,"name":"github.com"}],"answer":[{"rr":{"key":{"class":1,"type":5,"name":"www.github.com"},"name":"github.com"},"raw":"A3d3dwZnaXRodWIDY29tAAAFAAEAAA4QAAwGZ2l0aHViA2NvbQA=","ifindex":2},{"rr":{"key":{"class":1,"type":1,"name":"github.com"},"address":[140,82,112,3]},"raw":"BmdpdGh1YgNjb20AAAEAAQAAADwABIxScAM=","ifindex":2}]}
+{"state":"success","question":[{"class":1,"type":28,"name":"Example.COM."}],"answer":[{"rr":{"key":{"class":1,"type":28,"name":"example.com"},"address":[38,6,40,0,2,31,203,7,0,0,0,0,0,0,104,32]},"raw":"B2V4YW1wbGUDY29tAAAcAAEAAAEsABAmBigAAh/LBwAAAAAAAGgg"}]}
+{"state":"success","question":[{"class":1,"type":15,"name":"gmail.com"}],"answer":[{"rr":{"key":{"class":1,"type":15,"name":"gmail.com"},"priority":5,"name":"gmail-smtp-in.l.google.com"}}]}
+{"state":"rcode-failure","rcode":3,"question":[{"class":1,"type":1,"name":"nonexistent-zz9.invalid"}]}
+{"state":"timeout","question":[{"class":1,"type":1,"name":"slow.example.net"}]}
+{"state":"success","question":[{"class":1,"type":1,"name":"kr1.shad-grouper.ts.net"}],"answer":[{"rr":{"key":{"class":1,"type":1,"name":"kr1.shad-grouper.ts.net"},"address":[100,64,0,7]}}]}
+not json

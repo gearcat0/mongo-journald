@@ -1,0 +1,33 @@
+[Unit]
+Description=mongo-journald (dns) — ship systemd-resolved DNS lookups to MongoDB
+Documentation=https://github.com/gearcat0/mongo-journald
+After=network-online.target systemd-resolved.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# root: resolved's query monitor (io.systemd.Resolve.Monitor, used by
+# `resolvectl monitor`) only answers root. No capabilities are kept.
+User=root
+EnvironmentFile=/etc/mongo-journald/env
+ExecStart=/usr/bin/mongo-journald --config /etc/mongo-journald/config.json --mode dns
+Restart=always
+RestartSec=5
+
+# hardening
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

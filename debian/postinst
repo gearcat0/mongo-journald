@@ -9,6 +9,8 @@
 set -e
 
 SERVICE=mongo-journald.service
+# opt-in units: privileged and high-volume, so never enabled by the package
+OPTIONAL="mongo-journald-dns.service mongo-journald-flows.service"
 SVC_USER=mongo-journald
 LIBDIR=/var/lib/mongo-journald
 ENVFILE=/etc/mongo-journald/env
@@ -48,12 +50,14 @@ EOF
 			# upgrade ($2 = old version): restart only if already running,
 			# so a configured host picks up the new binary, and an
 			# unconfigured one stays stopped.
-			systemctl try-restart "$SERVICE" || true
+			systemctl try-restart "$SERVICE" $OPTIONAL || true
 		else
 			# fresh install: do not start until the URI is set.
 			echo "mongo-journald: installed and enabled, but NOT started."
 			echo "  1. set MONGO_JOURNALD_URI in $ENVFILE"
 			echo "  2. systemctl start mongo-journald"
+			echo "optional (disabled): DNS lookups and network flows:"
+			echo "  systemctl enable --now mongo-journald-dns mongo-journald-flows"
 		fi
 	fi
 	;;
