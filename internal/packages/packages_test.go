@@ -78,3 +78,52 @@ func TestListLive(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOSRelease(t *testing.T) {
+	kv := parseOSRelease(strings.NewReader(`PRETTY_NAME="Ubuntu 24.04.3 LTS"
+NAME="Ubuntu"
+# a comment
+VERSION_ID="24.04"
+VERSION_CODENAME=noble
+ID=ubuntu
+ODD='single \$quoted'
+
+`))
+	d := osDoc(kv)
+	if d["id"] != "ubuntu" || d["version"] != "24.04" || d["codename"] != "noble" || d["name"] != "Ubuntu 24.04.3 LTS" || len(d) != 4 {
+		t.Errorf("os doc: %+v", d)
+	}
+	if kv["ODD"] != "single $quoted" {
+		t.Errorf("unquote: %q", kv["ODD"])
+	}
+	if len(osDoc(map[string]string{})) != 0 {
+		t.Error("empty os-release must give an empty doc")
+	}
+}
+
+func TestParseBootTime(t *testing.T) {
+	got, ok := parseBootTime(strings.NewReader("cpu  1 2 3\nctxt 99\nbtime 1794818777\nprocesses 5\n"))
+	if !ok || !got.Equal(time.Unix(1794818777, 0)) {
+		t.Errorf("boot: %v %v", got, ok)
+	}
+	if _, ok := parseBootTime(strings.NewReader("cpu 1 2 3\n")); ok {
+		t.Error("want !ok without btime")
+	}
+}
+
+func TestHostDocLive(t *testing.T) {
+	at := time.Now().UTC()
+	d := HostDoc("h", at, time.Hour)
+	if d["server"] != "h" || d["kernel"] == "" || d["kernel"] == nil || d["arch"] == nil || d["expireAt"] != at.Add(time.Hour) {
+		t.Errorf("host doc: %+v", d)
+	}
+	if _, ok := d["reboot_required"].(bool); !ok {
+		t.Errorf("reboot_required: %+v", d["reboot_required"])
+	}
+	if b, ok := d["boot"].(time.Time); !ok || b.After(at) {
+		t.Errorf("boot: %+v", d["boot"])
+	}
+	if got := uniqueLines("linux-image-7\nlibc6\n\nlinux-image-7\n"); len(got) != 2 || got[1] != "libc6" {
+		t.Errorf("uniqueLines: %v", got)
+	}
+}

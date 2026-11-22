@@ -16,18 +16,19 @@ const day = 24 * time.Hour
 // out of the file and supplied via MONGO_JOURNALD_URI so credentials
 // don't live in config.json.
 type Config struct {
-	Mongo      MongoConfig `json:"mongo"`
-	Retention  string      `json:"retention"` // "60d", "48h", "forever"
-	Priority   *int        `json:"priority"`  // syslog floor 0..7 (default 6: info and above)
-	Redact     *bool       `json:"redact"`    // scrub secrets from messages (default true)
-	CursorFile string      `json:"cursorFile"`
-	Hostname   string      `json:"hostname"` // override; default os.Hostname()
-	Units      UnitFilter  `json:"units"`
-	Batch      BatchConfig `json:"batch"`
-	RawFields  bool        `json:"rawFields"`
-	DNS        DNSConfig   `json:"dns"`   // --mode dns
-	Flows      FlowsConfig `json:"flows"` // --mode flows
-	Packages   PkgConfig   `json:"packages"`
+	Mongo      MongoConfig   `json:"mongo"`
+	Retention  string        `json:"retention"` // "60d", "48h", "forever"
+	Priority   *int          `json:"priority"`  // syslog floor 0..7 (default 6: info and above)
+	Redact     *bool         `json:"redact"`    // scrub secrets from messages (default true)
+	CursorFile string        `json:"cursorFile"`
+	Hostname   string        `json:"hostname"` // override; default os.Hostname()
+	Units      UnitFilter    `json:"units"`
+	Batch      BatchConfig   `json:"batch"`
+	RawFields  bool          `json:"rawFields"`
+	DNS        DNSConfig     `json:"dns"`   // --mode dns
+	Flows      FlowsConfig   `json:"flows"` // --mode flows
+	Packages   PkgConfig     `json:"packages"`
+	Metrics    MetricsConfig `json:"metrics"`
 
 	// derived
 	priority   int
@@ -81,11 +82,42 @@ type FlowsConfig struct {
 type PkgConfig struct {
 	Enabled    *bool  `json:"enabled"`    // default true
 	Collection string `json:"collection"` // default "packages"
-	Interval   string `json:"interval"`   // full rescan at least this often; default "1h"
-	Retention  string `json:"retention"`  // a host's docs expire this long after its last scan; default "14d"
+	// HostCollection gets one doc per host (OS release, running kernel,
+	// boot time, reboot-required) on every scan; default "hosts".
+	HostCollection string `json:"hostCollection"`
+	Interval       string `json:"interval"`  // full rescan at least this often; default "1h"
+	Retention      string `json:"retention"` // a host's docs expire this long after its last scan; default "14d"
 
 	enabled             bool
 	interval, retention time.Duration
+}
+
+// MetricsConfig configures the workload samples (host CPU, memory,
+// pressure, disks, network, and per-unit cgroup usage), which the journal
+// service ships alongside the logs. On unless "enabled" is false.
+type MetricsConfig struct {
+	Enabled    *bool             `json:"enabled"`    // default true
+	Collection string            `json:"collection"` // host samples; default "metrics"
+	Interval   string            `json:"interval"`   // default "1m"
+	Retention  string            `json:"retention"`  // host samples; default "30d"
+	Units      UnitMetricsConfig `json:"units"`
+
+	enabled             bool
+	interval, retention time.Duration
+}
+
+// UnitMetricsConfig configures the per-unit samples: raw documents for
+// busy units (default collection "unit_metrics", kept "3d") and an hourly
+// rollup of every unit ("unit_metrics_hourly", kept "60d").
+type UnitMetricsConfig struct {
+	StreamConfig
+	Enabled   *bool    `json:"enabled"`   // default true
+	MinCPUPct *float64 `json:"minCpuPct"` // raw doc if >= this % of one core; default 1
+	MinMemMB  *int     `json:"minMemMB"`  // … or holding >= this much memory; default 100
+
+	enabled   bool
+	minCPUPct float64
+	minMem    uint64
 }
 
 type UnitFilter struct {
@@ -167,6 +199,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := c.Packages.fill(); err != nil {
 		return nil, err
 	}
+	if err := c.Metrics.fill(); err != nil {
+		return nil, err
+	}
 	c.Flows.proc = true
 	if c.Flows.Proc != nil {
 		c.Flows.proc = *c.Flows.Proc
@@ -216,6 +251,9 @@ func (p *PkgConfig) fill() error {
 	if p.Collection == "" {
 		p.Collection = "packages"
 	}
+	if p.HostCollection == "" {
+		p.HostCollection = "hosts"
+	}
 	p.interval = time.Hour
 	if s := strings.TrimSpace(p.Interval); s != "" {
 		d, err := time.ParseDuration(s)
@@ -235,6 +273,49 @@ func (p *PkgConfig) fill() error {
 	// the gap between scans or live hosts' docs would expire.
 	if p.retention != 0 && p.retention < 2*p.interval {
 		return fmt.Errorf("packages.retention (%s) must be at least twice packages.interval (%s)", p.retention, p.interval)
+	}
+	return nil
+}
+
+func (m *MetricsConfig) fill() error {
+	m.enabled = m.Enabled == nil || *m.Enabled
+	if m.Collection == "" {
+		m.Collection = "metrics"
+	}
+	m.interval = time.Minute
+	if s := strings.TrimSpace(m.Interval); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("metrics.interval: %w", err)
+		}
+		if d < time.Second || d > time.Hour {
+			return fmt.Errorf("metrics.interval: %s is outside 1s..1h", d)
+		}
+		m.interval = d
+	}
+	var err error
+	if m.retention, err = retentionOr(m.Retention, 30*day); err != nil {
+		return fmt.Errorf("metrics.retention: %w", err)
+	}
+
+	u := &m.Units
+	if err := u.fill("metrics.units", "unit_metrics", "unit_metrics_hourly"); err != nil {
+		return err
+	}
+	u.enabled = u.Enabled == nil || *u.Enabled
+	u.minCPUPct = 1
+	if u.MinCPUPct != nil {
+		if *u.MinCPUPct < 0 {
+			return fmt.Errorf("metrics.units.minCpuPct must not be negative")
+		}
+		u.minCPUPct = *u.MinCPUPct
+	}
+	u.minMem = 100 << 20
+	if u.MinMemMB != nil {
+		if *u.MinMemMB < 0 {
+			return fmt.Errorf("metrics.units.minMemMB must not be negative")
+		}
+		u.minMem = uint64(*u.MinMemMB) << 20
 	}
 	return nil
 }

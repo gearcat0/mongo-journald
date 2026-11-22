@@ -6,6 +6,9 @@
 // is installed and deletes this host's documents that the scan no longer
 // saw, so a version change replaces the old document. expireAt is
 // refreshed on every scan, so a host that stops reporting ages out.
+//
+// Each scan also writes one document about the host itself (OS release,
+// running kernel, boot time, reboot-required) to a second collection.
 package packages
 
 import (
@@ -114,6 +117,7 @@ func Doc(p Package, host string, at time.Time, retention time.Duration) model.Do
 // Options configures a Syncer.
 type Options struct {
 	Collection string
+	HostColl   string // one doc per server with OS release and kernel; "" = don't write it
 	Hostname   string
 	Interval   time.Duration // rescan at least this often, even if nothing changed
 	Retention  time.Duration // a host's docs expire this long after its last scan; 0 = never
@@ -122,9 +126,10 @@ type Options struct {
 
 // Syncer keeps one host's documents in the packages collection current.
 type Syncer struct {
-	db    *mongo.Database
-	opt   Options
-	first bool
+	db     *mongo.Database
+	opt    Options
+	first  bool
+	noDpkg bool // no dpkg-query here: only the host document is written
 }
 
 func NewSyncer(db *mongo.Database, opt Options) *Syncer {
@@ -138,8 +143,19 @@ func (s *Syncer) notify(f string, a ...any) {
 }
 
 // EnsureIndexes creates the TTL index, the unique key and a by-name
-// lookup index. Idempotent.
+// lookup index, plus the TTL index and unique server key of the host
+// collection. Idempotent.
 func (s *Syncer) EnsureIndexes(ctx context.Context) error {
+	if s.opt.HostColl != "" {
+		if err := store.EnsureIndexes(ctx, s.db, s.opt.HostColl); err != nil {
+			return err
+		}
+		if _, err := s.db.Collection(s.opt.HostColl).Indexes().CreateOne(ctx, mongo.IndexModel{
+			Keys: bson.D{{Key: "server", Value: 1}}, Options: options.Index().SetUnique(true).SetName("host_key"),
+		}); err != nil {
+			return fmt.Errorf("%s: %w", s.opt.HostColl, err)
+		}
+	}
 	if err := store.EnsureIndexes(ctx, s.db, s.opt.Collection, bson.D{{Key: "name", Value: 1}, {Key: "version", Value: 1}}); err != nil {
 		return err
 	}
@@ -155,7 +171,10 @@ func (s *Syncer) EnsureIndexes(ctx context.Context) error {
 func (s *Syncer) Run(ctx context.Context) {
 	if _, err := exec.LookPath("dpkg-query"); err != nil {
 		s.notify("packages: dpkg-query not found; package inventory is off")
-		return
+		s.noDpkg = true
+		if s.opt.HostColl == "" {
+			return
+		}
 	}
 	ictx, cancel := context.WithTimeout(ctx, time.Minute)
 	if err := s.EnsureIndexes(ictx); err != nil {
@@ -197,19 +216,34 @@ func statusMtime() time.Time {
 	return fi.ModTime()
 }
 
-// Sync does one scan: upsert every package, then delete this host's
-// documents the scan did not touch (removed packages and old versions).
+// Sync does one scan: replace the host document, upsert every package,
+// then delete this host's package documents the scan did not touch
+// (removed packages and old versions).
 func (s *Syncer) Sync(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+
+	// Mongo dates have millisecond precision; truncate so the stale
+	// filter below compares against exactly what was stored.
+	at := time.Now().UTC().Truncate(time.Millisecond)
+
+	if s.opt.HostColl != "" {
+		_, err := s.db.Collection(s.opt.HostColl).ReplaceOne(ctx,
+			bson.D{{Key: "server", Value: s.opt.Hostname}},
+			HostDoc(s.opt.Hostname, at, s.opt.Retention),
+			options.Replace().SetUpsert(true))
+		if err != nil {
+			return fmt.Errorf("write host doc to %s: %w", s.opt.HostColl, err)
+		}
+	}
+	if s.noDpkg {
+		return nil
+	}
 
 	pkgs, err := List(ctx)
 	if err != nil {
 		return err
 	}
-	// Mongo dates have millisecond precision; truncate so the stale
-	// filter below compares against exactly what was stored.
-	at := time.Now().UTC().Truncate(time.Millisecond)
 
 	ops := make([]mongo.WriteModel, 0, len(pkgs))
 	for _, p := range pkgs {

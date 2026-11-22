@@ -57,7 +57,7 @@ func TestPackagesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := c.Packages; !p.enabled || p.Collection != "packages" || p.interval != time.Hour || p.retention != 14*day {
+	if p := c.Packages; !p.enabled || p.Collection != "packages" || p.HostCollection != "hosts" || p.interval != time.Hour || p.retention != 14*day {
 		t.Errorf("defaults: %+v", p)
 	}
 	c, err = loadJSON(t, `{"packages":{"enabled":false,"collection":"pkgs","interval":"6h","retention":"forever"}}`)
@@ -68,6 +68,37 @@ func TestPackagesConfig(t *testing.T) {
 		t.Errorf("overrides: %+v", p)
 	}
 	for _, bad := range []string{`{"packages":{"interval":"10s"}}`, `{"packages":{"interval":"x"}}`, `{"packages":{"interval":"12h","retention":"12h"}}`} {
+		if _, err := loadJSON(t, bad); err == nil {
+			t.Errorf("want error for %s", bad)
+		}
+	}
+}
+
+func TestMetricsConfig(t *testing.T) {
+	c, err := loadJSON(t, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := c.Metrics
+	if !m.enabled || m.Collection != "metrics" || m.interval != time.Minute || m.retention != 30*day {
+		t.Errorf("defaults: %+v", m)
+	}
+	if u := m.Units; !u.enabled || u.Collection != "unit_metrics" || u.RollupCollection != "unit_metrics_hourly" ||
+		u.retention != 3*day || u.rollupRetention != 60*day || u.minCPUPct != 1 || u.minMem != 100<<20 {
+		t.Errorf("unit defaults: %+v", u)
+	}
+	c, err = loadJSON(t, `{"metrics":{"enabled":false,"interval":"15s","retention":"7d",
+		"units":{"enabled":false,"collection":"u","retention":"1d","minCpuPct":0.5,"minMemMB":0}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = c.Metrics
+	if m.enabled || m.interval != 15*time.Second || m.retention != 7*day || m.Units.enabled || m.Units.Collection != "u" ||
+		m.Units.retention != day || m.Units.minCPUPct != 0.5 || m.Units.minMem != 0 {
+		t.Errorf("overrides: %+v", m)
+	}
+	for _, bad := range []string{`{"metrics":{"interval":"10ms"}}`, `{"metrics":{"interval":"2h"}}`, `{"metrics":{"retention":"x"}}`,
+		`{"metrics":{"units":{"minCpuPct":-1}}}`, `{"metrics":{"units":{"rollupRetention":"x"}}}`} {
 		if _, err := loadJSON(t, bad); err == nil {
 			t.Errorf("want error for %s", bad)
 		}

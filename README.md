@@ -42,8 +42,9 @@ MONGO_JOURNALD_URI=mongodb://w_syslog:PASS@MONGO_HOST/syslog?authSource=syslog
 Key options (journal mode): `priority` (syslog floor, default `6` = info and above, drops debug), `retention`
 (`60d`/`48h`/`forever`), `redact` (scrub secrets from messages, default `true`),
 `units.deny`/`units.allow`, `batch.{size,buffer,flush}`, `rawFields` (keep every journald field under
-`fields`; off by default), `hostname` (override the host tag). The `dns` and `flows` sections configure
-the optional modes ([below](#dns-lookups-and-network-flows-optional)).
+`fields`; off by default), `hostname` (override the host tag). The `packages` and `metrics` sections configure the package
+inventory and workload samples, which the same service ships and which are on by default. The `dns`
+and `flows` sections configure the optional modes ([below](#dns-lookups-and-network-flows-optional)).
 
 ### Redaction
 
@@ -82,15 +83,35 @@ for packages that are gone or were superseded by a new version.
 | `at` | the host's last successful scan |
 | `expireAt` | `at + retention`; a host that stops reporting ages out |
 
-Config, all optional:
+### Host facts → `hosts`
+
+Every scan also replaces one document per host in the `hosts` collection, so the release and the
+running kernel don't have to be inferred from package versions:
+
+| field | notes |
+|---|---|
+| `server` | unique key |
+| `os` | from `/etc/os-release`: `{id, version, codename, name}`, e.g. `{ubuntu, 24.04, noble, Ubuntu 24.04.3 LTS}` |
+| `kernel`, `arch` | the **running** kernel (`uname -r`) and machine (`uname -m`) |
+| `boot` | boot time |
+| `reboot_required`, `reboot_pkgs` | whether `/run/reboot-required` exists, and the packages that asked for it |
+| `at`, `expireAt` | last scan, and `at + retention` |
+
+It is written on hosts without `dpkg-query` too.
+
+### Config
+
+All optional:
 
 ```json
-"packages": { "enabled": true, "collection": "packages", "interval": "1h", "retention": "14d" }
+"packages": { "enabled": true, "collection": "packages", "hostCollection": "hosts", "interval": "1h", "retention": "14d" }
 ```
 
+`enabled: false` turns off both collections.
+
 `retention` must be at least twice `interval`. Hosts without `dpkg-query` log one line and skip the
-inventory. `mongo-journald --mode packages` runs a single scan and exits; add `--dry-run` to print the
-documents instead of writing them.
+package inventory. `mongo-journald --mode packages` runs a single scan and exits; add `--dry-run` to
+print the documents instead of writing them (the host document first, then one line per package).
 
 ```js
 // versions of one package across the fleet
@@ -101,9 +122,95 @@ db.packages.aggregate([{$match: {status: "installed"}},
   {$match: {"versions.1": {$exists: true}}}])
 // what changed in the last day (upgrades and new installs)
 db.packages.find({since: {$gte: new Date(Date.now() - 864e5)}}, {_id: 0, server: 1, name: 1, version: 1, since: 1})
+// release, running kernel and uptime per host; hosts waiting for a reboot
+db.hosts.find({}, {_id: 0, server: 1, "os.name": 1, kernel: 1, boot: 1, reboot_required: 1}).sort({server: 1})
+db.hosts.find({reboot_required: true}, {_id: 0, server: 1, kernel: 1, reboot_pkgs: 1})
 // held packages, and hosts whose inventory is stale
 db.packages.find({hold: true}, {_id: 0, server: 1, name: 1, version: 1})
 db.packages.aggregate([{$group: {_id: "$server", at: {$max: "$at"}, n: {$sum: 1}}}, {$sort: {at: 1}}])
+```
+
+## Workload metrics (on by default)
+
+The journal service also samples what the host is doing, once a minute, into three collections. Like
+the package inventory this needs no extra privileges or unit and is **on unless the config says
+otherwise**. Everything comes from `/proc`, `/sys/fs/cgroup` and `statfs`. Counters are stored as the
+change over the interval, so each document describes one minute. Samples are taken on the minute, so
+hosts line up. There is no resume: time the service is stopped is simply missing.
+
+### Host samples → `metrics`
+
+One document per host per interval, kept `30d` by default (about 43,000 small documents per host).
+
+| field | notes |
+|---|---|
+| `at`, `server`, `expireAt`, `dt_s` | end of the interval, and its length in seconds |
+| `load1`, `load5`, `load15`, `tasks`, `ncpu` | load averages, number of tasks, CPU count |
+| `cpu` | `{user, system, iowait, steal, busy}` in % of the whole machine (`busy` = user + system + steal) |
+| `mem` | `{total, available, used_pct, swap_total, swap_used}` in bytes |
+| `oom_kills` | OOM kills in the interval |
+| `psi` | `{cpu_some, mem_some, mem_full, io_some, io_full}`: % of the interval in which tasks were stalled waiting for that resource (`some` = at least one task, `full` = all of them) |
+| `disks` | `[{mount, dev, fs, total, used, avail, used_pct, inodes_used_pct}]` per real filesystem; `used_pct` matches `df` |
+| `io` | `{read_bytes, write_bytes}` summed over the physical disks |
+| `net` | `[{if, rx_bytes, tx_bytes, rx_errs, tx_errs, rx_drop, tx_drop}]` per interface that saw traffic (no `lo` or `veth*`) |
+
+A field is left out when the host doesn't provide its source (for example `psi` on a kernel without
+pressure stall information). A filesystem the unit's sandbox hides is also left out: with the shipped
+unit's `ProtectHome=true` that means a `/home` on its own partition.
+
+### Per-unit samples → `unit_metrics`, `unit_metrics_hourly`
+
+Read from each systemd unit's cgroup (v2): every `.service` and `.scope`, plus each `user-<uid>.slice`
+as a whole. `unit` matches the `proc.unit` of `flows`.
+
+`unit_metrics` (raw, default `3d`) gets a document only for an interval in which the unit was busy:
+at least `minCpuPct` (default `1`) percent of one core, or at least `minMemMB` (default `100`) of
+memory.
+
+| field | notes |
+|---|---|
+| `at`, `server`, `unit`, `expireAt` | |
+| `cpu_pct`, `cpu_usec` | CPU used in the interval, as % of **one core** (200 = two cores busy) and in µs |
+| `mem`, `mem_peak` | current memory, and the peak since the unit started (kernel ≥ 5.19) |
+| `io_read_bytes`, `io_write_bytes` | in the interval |
+| `tasks` | processes and threads |
+
+`unit_metrics_hourly` (default `60d`) covers **every** unit, busy or not:
+`{server, hour, unit, n, cpu_usec, mem_sum, mem_max, io_read_bytes, io_write_bytes}`. `n` is the
+number of samples, so average memory is `mem_sum / n` and average CPU is `cpu_usec / (n × interval)`.
+
+### Config
+
+All optional:
+
+```json
+"metrics": {
+  "enabled": true, "collection": "metrics", "interval": "1m", "retention": "30d",
+  "units": { "enabled": true, "collection": "unit_metrics", "rollupCollection": "unit_metrics_hourly",
+             "retention": "3d", "rollupRetention": "60d", "minCpuPct": 1, "minMemMB": 100 }
+}
+```
+
+`mongo-journald --mode metrics --dry-run` prints the documents instead of writing them, until
+interrupted (without `--dry-run` it runs only the sampler; don't do that next to the service, or
+every sample is written twice).
+
+```js
+// current state of each host
+db.metrics.aggregate([{$sort: {at: -1}}, {$group: {_id: "$server", at: {$first: "$at"}, load1: {$first: "$load1"},
+  cpu: {$first: "$cpu.busy"}, mem: {$first: "$mem.used_pct"}}}])
+// filesystems over 80% full (latest sample per host)
+db.metrics.aggregate([{$sort: {at: -1}}, {$group: {_id: "$server", disks: {$first: "$disks"}}}, {$unwind: "$disks"},
+  {$match: {"disks.used_pct": {$gte: 80}}}, {$project: {mount: "$disks.mount", pct: "$disks.used_pct"}}])
+// when was a host under memory or IO pressure, last 24h
+db.metrics.find({server: "dev", at: {$gte: new Date(Date.now() - 864e5)},
+  $or: [{"psi.mem_some": {$gte: 10}}, {"psi.io_some": {$gte: 10}}]}, {_id: 0, at: 1, psi: 1, load1: 1})
+// top units by CPU per host, last 24h, in core-hours
+db.unit_metrics_hourly.aggregate([{$match: {hour: {$gte: new Date(Date.now() - 864e5)}}},
+  {$group: {_id: {s: "$server", u: "$unit"}, cpu: {$sum: "$cpu_usec"}, mem_max: {$max: "$mem_max"}}},
+  {$project: {core_hours: {$divide: ["$cpu", 3.6e9]}, mem_max: 1}}, {$sort: {core_hours: -1}}, {$limit: 20}])
+// what was busy on a host at a given minute
+db.unit_metrics.find({server: "dev", at: ISODate("2026-11-22T10:31:00Z")}, {_id: 0, unit: 1, cpu_pct: 1, mem: 1}).sort({cpu_pct: -1})
 ```
 
 ## DNS lookups and network flows (optional)
@@ -338,12 +445,14 @@ sudo systemctl start mongo-journald
 ```
 main.go            flags (--mode), wiring, graceful shutdown, cursor persistence, --mode packages
 stream.go          --mode dns|flows wiring: sink + hourly rollup
+metrics.go         workload sampler wiring: sinks + per-unit hourly rollup, --mode metrics
 config.go          config (+ dns/flows sections) + ParseRetention (60d/forever syntax)
 internal/journal/  reader.go (journalctl --follow + resume), doc.go (journald→doc), doc_test.go
 internal/dns/      reader.go (resolvectl monitor), doc.go (monitor JSON→doc), testdata/
 internal/flows/    conntrack.go (netlink events, filter), doc.go (flow→doc), attrib.go + procfs.go (process attribution)
-internal/packages/ packages.go (dpkg-query → upsert current packages, drop stale ones)
-internal/rollup/   rollup.go (hourly $inc upserts)
+internal/packages/ packages.go (dpkg-query → upsert current packages, drop stale ones), host.go (os-release, kernel → hosts)
+internal/metrics/  metrics.go (interval samples: host + per-unit), parse.go (/proc and cgroup readers)
+internal/rollup/   rollup.go (hourly $inc / $max upserts)
 internal/store/    store.go (Open + ensure TTL/lookup indexes), sink.go (batch/backpressure/retry)
 internal/redact/   redact.go (scrub secrets from messages), redact_test.go
 internal/model/    Doc + Record
