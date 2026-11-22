@@ -10,6 +10,7 @@ package rollup
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ type entry struct {
 	hour time.Time
 	key  []any
 	inc  map[string]int64
+	max  map[string]int64 // high-water marks, written with $max
 }
 
 // New starts the flusher goroutine. With a nil db nothing is flushed
@@ -68,6 +70,12 @@ func New(db *mongo.Database, cfg Config) *Rollup {
 // Add increments counters for the key (values in KeyFields order) in the
 // hour containing at.
 func (r *Rollup) Add(at time.Time, key []any, inc map[string]int64) {
+	r.AddMax(at, key, inc, nil)
+}
+
+// AddMax is Add plus high-water marks: each max field ends up holding
+// the largest value seen for the key in that hour.
+func (r *Rollup) AddMax(at time.Time, key []any, inc, max map[string]int64) {
 	hour := at.UTC().Truncate(time.Hour)
 	id := mapKey(hour, key)
 	r.mu.Lock()
@@ -78,6 +86,14 @@ func (r *Rollup) Add(at time.Time, key []any, inc map[string]int64) {
 	}
 	for k, v := range inc {
 		e.inc[k] += v
+	}
+	for k, v := range max {
+		if cur, ok := e.max[k]; !ok || v > cur {
+			if e.max == nil {
+				e.max = map[string]int64{}
+			}
+			e.max[k] = v
+		}
 	}
 	full := len(r.acc) >= r.cfg.MaxKeys
 	r.mu.Unlock()
@@ -157,7 +173,7 @@ func (r *Rollup) flush() {
 }
 
 // Model builds the upsert for one entry: filter on the key, $inc the
-// counters, $setOnInsert the expiry.
+// counters, $max the high-water marks, $setOnInsert the expiry.
 func (r *Rollup) Model(e *entry) mongo.WriteModel {
 	return mongo.NewUpdateOneModel().SetFilter(r.filter(e)).SetUpdate(r.update(e)).SetUpsert(true)
 }
@@ -185,6 +201,13 @@ func (r *Rollup) update(e *entry) bson.D {
 		inc = append(inc, bson.E{Key: k, Value: e.inc[k]})
 	}
 	u := bson.D{{Key: "$inc", Value: inc}}
+	if len(e.max) > 0 {
+		mx := bson.D{}
+		for _, k := range slices.Sorted(maps.Keys(e.max)) {
+			mx = append(mx, bson.E{Key: k, Value: e.max[k]})
+		}
+		u = append(u, bson.E{Key: "$max", Value: mx})
+	}
 	if r.cfg.Retention > 0 {
 		u = append(u, bson.E{Key: "$setOnInsert", Value: bson.D{{Key: "expireAt", Value: e.hour.Add(r.cfg.Retention)}}})
 	}

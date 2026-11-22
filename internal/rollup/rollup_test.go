@@ -66,3 +66,26 @@ func mustMarshal(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+func TestAddMax(t *testing.T) {
+	r := New(nil, Config{Collection: "unit_metrics_hourly", Server: "h1", KeyFields: []string{"unit"}})
+	t1 := time.Date(2026, 11, 22, 9, 1, 0, 0, time.UTC)
+	r.AddMax(t1, []any{"a.service"}, map[string]int64{"n": 1, "mem_sum": 50}, map[string]int64{"mem_max": 50})
+	r.AddMax(t1.Add(time.Minute), []any{"a.service"}, map[string]int64{"n": 1, "mem_sum": 70}, map[string]int64{"mem_max": 70})
+	r.AddMax(t1.Add(2*time.Minute), []any{"a.service"}, map[string]int64{"n": 1, "mem_sum": 60}, map[string]int64{"mem_max": 60})
+	acc := r.take()
+	if len(acc) != 1 {
+		t.Fatalf("got %d keys", len(acc))
+	}
+	for _, e := range acc {
+		if e.inc["n"] != 3 || e.inc["mem_sum"] != 180 || e.max["mem_max"] != 70 {
+			t.Fatalf("entry: %+v", e)
+		}
+		m := r.Model(e).(*mongo.UpdateOneModel)
+		want := bson.D{{Key: "$inc", Value: bson.D{{Key: "mem_sum", Value: int64(180)}, {Key: "n", Value: int64(3)}}},
+			{Key: "$max", Value: bson.D{{Key: "mem_max", Value: int64(70)}}}}
+		if got, _ := bson.Marshal(m.Update); string(got) != string(mustMarshal(t, want)) {
+			t.Errorf("update = %v", m.Update)
+		}
+	}
+}

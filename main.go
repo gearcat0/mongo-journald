@@ -7,7 +7,9 @@
 // own collections, plus hourly rollups.
 //
 // The journal service also keeps an inventory of installed packages
-// (dpkg) in its own collection; --mode packages runs one such scan.
+// (dpkg) and samples the host's workload (CPU, memory, disks, per-unit
+// usage), each in its own collections; --mode packages runs one package
+// scan and --mode metrics runs only the sampler.
 package main
 
 import (
@@ -34,7 +36,7 @@ var version = "0.3.0"
 
 func main() {
 	cfgPath := flag.String("config", "/etc/mongo-journald/config.json", "path to config JSON")
-	mode := flag.String("mode", "journal", "what to ship: journal (journald logs, plus the package inventory), dns (resolved lookups), flows (conntrack flows), packages (one package scan, then exit)")
+	mode := flag.String("mode", "journal", "what to ship: journal (journald logs, plus the package inventory and workload metrics), dns (resolved lookups), flows (conntrack flows), packages (one package scan, then exit), metrics (only the workload metrics)")
 	dryRun := flag.Bool("dry-run", false, "map and print docs as JSON to stdout; do not connect to Mongo")
 	stdin := flag.Bool("stdin", false, "read journald JSON (one object per line) from stdin instead of journalctl")
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -66,8 +68,10 @@ func main() {
 		os.Exit(runStream(*mode, cfg, host, *dryRun, *stdin, logf))
 	case "packages":
 		os.Exit(runPackages(cfg, host, *dryRun, logf))
+	case "metrics":
+		os.Exit(runMetrics(cfg, host, *dryRun, logf))
 	default:
-		logf("unknown --mode %q (want journal, dns, flows or packages)", *mode)
+		logf("unknown --mode %q (want journal, dns, flows, packages or metrics)", *mode)
 		os.Exit(2)
 	}
 
@@ -141,6 +145,12 @@ func main() {
 		if cfg.Packages.enabled && !*stdin {
 			go packages.NewSyncer(db, pkgOptions(cfg, host, logf)).Run(ctx)
 		}
+		// Workload metrics: likewise independent of the log stream.
+		if cfg.Metrics.enabled && !*stdin {
+			closeMetrics := startMetrics(db, cfg, host, logf)
+			closeLogs := closeConsumer
+			closeConsumer = func() { closeLogs(); closeMetrics() }
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -167,6 +177,7 @@ func main() {
 func pkgOptions(cfg *Config, host string, logf func(string, ...any)) packages.Options {
 	return packages.Options{
 		Collection: cfg.Packages.Collection,
+		HostColl:   cfg.Packages.HostCollection,
 		Hostname:   host,
 		Interval:   cfg.Packages.interval,
 		Retention:  cfg.Packages.retention,
@@ -174,7 +185,7 @@ func pkgOptions(cfg *Config, host string, logf func(string, ...any)) packages.Op
 	}
 }
 
-// runPackages runs --mode packages: one package scan, printed with
+// runPackages runs --mode packages: one host + package scan, printed with
 // --dry-run or written to Mongo, and returns the exit code. It runs even
 // when packages.enabled is false, since it was asked for explicitly.
 func runPackages(cfg *Config, host string, dryRun bool, logf func(string, ...any)) int {
@@ -182,13 +193,15 @@ func runPackages(cfg *Config, host string, dryRun bool, logf func(string, ...any
 	defer stop()
 
 	if dryRun {
+		// first line: the host document; then one line per package
+		enc := json.NewEncoder(os.Stdout)
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		_ = enc.Encode(packages.HostDoc(host, at, cfg.Packages.retention))
 		pkgs, err := packages.List(ctx)
 		if err != nil {
 			logf("packages: %v", err)
 			return 1
 		}
-		enc := json.NewEncoder(os.Stdout)
-		at := time.Now().UTC().Truncate(time.Millisecond)
 		for _, p := range pkgs {
 			_ = enc.Encode(packages.Doc(p, host, at, cfg.Packages.retention))
 		}
