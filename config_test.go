@@ -51,3 +51,25 @@ func TestStreamOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestPackagesConfig(t *testing.T) {
+	c, err := loadJSON(t, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.Packages; !p.enabled || p.Collection != "packages" || p.interval != time.Hour || p.retention != 14*day {
+		t.Errorf("defaults: %+v", p)
+	}
+	c, err = loadJSON(t, `{"packages":{"enabled":false,"collection":"pkgs","interval":"6h","retention":"forever"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.Packages; p.enabled || p.Collection != "pkgs" || p.interval != 6*time.Hour || p.retention != 0 {
+		t.Errorf("overrides: %+v", p)
+	}
+	for _, bad := range []string{`{"packages":{"interval":"10s"}}`, `{"packages":{"interval":"x"}}`, `{"packages":{"interval":"12h","retention":"12h"}}`} {
+		if _, err := loadJSON(t, bad); err == nil {
+			t.Errorf("want error for %s", bad)
+		}
+	}
+}

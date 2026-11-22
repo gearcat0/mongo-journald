@@ -5,6 +5,9 @@
 // --mode dns and --mode flows instead ship systemd-resolved lookups and
 // conntrack network flows (each run as its own systemd unit) into their
 // own collections, plus hourly rollups.
+//
+// The journal service also keeps an inventory of installed packages
+// (dpkg) in its own collection; --mode packages runs one such scan.
 package main
 
 import (
@@ -21,6 +24,7 @@ import (
 
 	"mongo-journald/internal/journal"
 	"mongo-journald/internal/model"
+	"mongo-journald/internal/packages"
 	"mongo-journald/internal/store"
 )
 
@@ -30,7 +34,7 @@ var version = "0.2.1"
 
 func main() {
 	cfgPath := flag.String("config", "/etc/mongo-journald/config.json", "path to config JSON")
-	mode := flag.String("mode", "journal", "what to ship: journal (journald logs), dns (resolved lookups), flows (conntrack flows)")
+	mode := flag.String("mode", "journal", "what to ship: journal (journald logs, plus the package inventory), dns (resolved lookups), flows (conntrack flows), packages (one package scan, then exit)")
 	dryRun := flag.Bool("dry-run", false, "map and print docs as JSON to stdout; do not connect to Mongo")
 	stdin := flag.Bool("stdin", false, "read journald JSON (one object per line) from stdin instead of journalctl")
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -60,8 +64,10 @@ func main() {
 	case "journal":
 	case "dns", "flows":
 		os.Exit(runStream(*mode, cfg, host, *dryRun, *stdin, logf))
+	case "packages":
+		os.Exit(runPackages(cfg, host, *dryRun, logf))
 	default:
-		logf("unknown --mode %q (want journal, dns or flows)", *mode)
+		logf("unknown --mode %q (want journal, dns, flows or packages)", *mode)
 		os.Exit(2)
 	}
 
@@ -129,6 +135,12 @@ func main() {
 		}
 		logf("mongo-journald %s: host=%q → %s.%s, priority<=%d, retention=%s",
 			version, host, cfg.Mongo.Database, cfg.Mongo.Collection, cfg.priority, cfg.retention)
+
+		// Package inventory: independent of the log stream, and never
+		// allowed to hold it up, so it runs on its own goroutine.
+		if cfg.Packages.enabled && !*stdin {
+			go packages.NewSyncer(db, pkgOptions(cfg, host, logf)).Run(ctx)
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -150,6 +162,57 @@ func main() {
 		os.Exit(1)
 	}
 	logf("shutdown complete")
+}
+
+func pkgOptions(cfg *Config, host string, logf func(string, ...any)) packages.Options {
+	return packages.Options{
+		Collection: cfg.Packages.Collection,
+		Hostname:   host,
+		Interval:   cfg.Packages.interval,
+		Retention:  cfg.Packages.retention,
+		Notify:     logf,
+	}
+}
+
+// runPackages runs --mode packages: one package scan, printed with
+// --dry-run or written to Mongo, and returns the exit code. It runs even
+// when packages.enabled is false, since it was asked for explicitly.
+func runPackages(cfg *Config, host string, dryRun bool, logf func(string, ...any)) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if dryRun {
+		pkgs, err := packages.List(ctx)
+		if err != nil {
+			logf("packages: %v", err)
+			return 1
+		}
+		enc := json.NewEncoder(os.Stdout)
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		for _, p := range pkgs {
+			_ = enc.Encode(packages.Doc(p, host, at, cfg.Packages.retention))
+		}
+		return 0
+	}
+
+	if cfg.Mongo.URI == "" {
+		logf("mongo.uri is required (set MONGO_JOURNALD_URI or mongo.uri in the config)")
+		return 2
+	}
+	db, err := store.Open(cfg.Mongo.URI, cfg.Mongo.Database)
+	if err != nil {
+		logf("mongo open: %v", err)
+		return 1
+	}
+	s := packages.NewSyncer(db, pkgOptions(cfg, host, logf))
+	if err := s.EnsureIndexes(ctx); err != nil {
+		logf("packages: ensure indexes on %s.%s: %v (continuing)", cfg.Mongo.Database, cfg.Packages.Collection, err)
+	}
+	if err := s.Sync(ctx); err != nil {
+		logf("packages: %v", err)
+		return 1
+	}
+	return 0
 }
 
 // cursorStore persists the last durably-written journald cursor so a
