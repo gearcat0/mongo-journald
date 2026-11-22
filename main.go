@@ -32,7 +32,7 @@ import (
 
 // version is the build version. It defaults to a dev value and is
 // overridden at build time via -ldflags "-X main.version=<v>".
-var version = "0.3.0"
+var version = "0.4.0"
 
 func main() {
 	cfgPath := flag.String("config", "/etc/mongo-journald/config.json", "path to config JSON")
