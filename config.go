@@ -27,6 +27,7 @@ type Config struct {
 	RawFields  bool        `json:"rawFields"`
 	DNS        DNSConfig   `json:"dns"`   // --mode dns
 	Flows      FlowsConfig `json:"flows"` // --mode flows
+	Packages   PkgConfig   `json:"packages"`
 
 	// derived
 	priority   int
@@ -73,6 +74,18 @@ type FlowsConfig struct {
 	proc        bool
 	ignoreNets  []netip.Prefix
 	ignorePorts map[uint16]bool
+}
+
+// PkgConfig configures the installed-package inventory, which the journal
+// service ships alongside the logs. It is on unless "enabled" is false.
+type PkgConfig struct {
+	Enabled    *bool  `json:"enabled"`    // default true
+	Collection string `json:"collection"` // default "packages"
+	Interval   string `json:"interval"`   // full rescan at least this often; default "1h"
+	Retention  string `json:"retention"`  // a host's docs expire this long after its last scan; default "14d"
+
+	enabled             bool
+	interval, retention time.Duration
 }
 
 type UnitFilter struct {
@@ -151,6 +164,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := c.Flows.fill("flows", "flows", "flows_hourly"); err != nil {
 		return nil, err
 	}
+	if err := c.Packages.fill(); err != nil {
+		return nil, err
+	}
 	c.Flows.proc = true
 	if c.Flows.Proc != nil {
 		c.Flows.proc = *c.Flows.Proc
@@ -191,6 +207,34 @@ func (s *StreamConfig) fill(name, coll, rollup string) error {
 	}
 	if s.rollupRetention, err = retentionOr(s.RollupRetention, 60*day); err != nil {
 		return fmt.Errorf("%s.rollupRetention: %w", name, err)
+	}
+	return nil
+}
+
+func (p *PkgConfig) fill() error {
+	p.enabled = p.Enabled == nil || *p.Enabled
+	if p.Collection == "" {
+		p.Collection = "packages"
+	}
+	p.interval = time.Hour
+	if s := strings.TrimSpace(p.Interval); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("packages.interval: %w", err)
+		}
+		if d < time.Minute {
+			return fmt.Errorf("packages.interval: %s is under the 1m minimum", d)
+		}
+		p.interval = d
+	}
+	var err error
+	if p.retention, err = retentionOr(p.Retention, 14*day); err != nil {
+		return fmt.Errorf("packages.retention: %w", err)
+	}
+	// Each scan pushes expireAt out by retention, so it has to outlast
+	// the gap between scans or live hosts' docs would expire.
+	if p.retention != 0 && p.retention < 2*p.interval {
+		return fmt.Errorf("packages.retention (%s) must be at least twice packages.interval (%s)", p.retention, p.interval)
 	}
 	return nil
 }

@@ -59,6 +59,53 @@ conservative — it rewrites only recognised secrets and leaves ordinary log tex
 Note: `rawFields` keeps the full journald field set unredacted, so leave `redact` on if you enable it,
 and prefer not enabling `rawFields` on hosts with sensitive logs.
 
+## Installed packages (on by default)
+
+The journal service also keeps an inventory of the host's installed packages in the `packages`
+collection, for checking patch levels across the fleet. It needs no extra privileges or unit, and it
+is **on unless the config says otherwise**, so existing hosts start reporting as soon as they run a
+version that has it.
+
+Source: `dpkg-query -W -f=…`, the tab-separated form of `dpkg -l`. Unlike the log collections,
+`packages` holds current state: one document per installed package per host. The service scans at
+startup, within a minute of any change to `/var/lib/dpkg/status` (so right after an `apt upgrade`),
+and at least every `interval`. Each scan upserts what is installed and deletes that host's documents
+for packages that are gone or were superseded by a new version.
+
+| field | notes |
+|---|---|
+| `server`, `name`, `arch`, `version` | the document key (unique index) |
+| `source` | source package name, which is what USNs and CVE trackers are filed against |
+| `status` | `installed`, or `config-files` (removed, not purged), `half-installed`, `unpacked`, … |
+| `hold` | `true` when the package is held back (`apt-mark hold`) |
+| `since` | when this host was first seen with this version (first scan, or the upgrade) |
+| `at` | the host's last successful scan |
+| `expireAt` | `at + retention`; a host that stops reporting ages out |
+
+Config, all optional:
+
+```json
+"packages": { "enabled": true, "collection": "packages", "interval": "1h", "retention": "14d" }
+```
+
+`retention` must be at least twice `interval`. Hosts without `dpkg-query` log one line and skip the
+inventory. `mongo-journald --mode packages` runs a single scan and exits; add `--dry-run` to print the
+documents instead of writing them.
+
+```js
+// versions of one package across the fleet
+db.packages.find({name: "openssl", status: "installed"}, {_id: 0, server: 1, version: 1, since: 1})
+// packages whose version differs between hosts
+db.packages.aggregate([{$match: {status: "installed"}},
+  {$group: {_id: {n: "$name", a: "$arch"}, versions: {$addToSet: "$version"}, hosts: {$push: {s: "$server", v: "$version"}}}},
+  {$match: {"versions.1": {$exists: true}}}])
+// what changed in the last day (upgrades and new installs)
+db.packages.find({since: {$gte: new Date(Date.now() - 864e5)}}, {_id: 0, server: 1, name: 1, version: 1, since: 1})
+// held packages, and hosts whose inventory is stale
+db.packages.find({hold: true}, {_id: 0, server: 1, name: 1, version: 1})
+db.packages.aggregate([{$group: {_id: "$server", at: {$max: "$at"}, n: {$sum: 1}}}, {$sort: {at: 1}}])
+```
+
 ## DNS lookups and network flows (optional)
 
 Two more modes of the same binary ship network telemetry into their own collections in the same
@@ -289,12 +336,13 @@ sudo systemctl start mongo-journald
 ## Layout
 
 ```
-main.go            flags (--mode), wiring, graceful shutdown, cursor persistence
+main.go            flags (--mode), wiring, graceful shutdown, cursor persistence, --mode packages
 stream.go          --mode dns|flows wiring: sink + hourly rollup
 config.go          config (+ dns/flows sections) + ParseRetention (60d/forever syntax)
 internal/journal/  reader.go (journalctl --follow + resume), doc.go (journald→doc), doc_test.go
 internal/dns/      reader.go (resolvectl monitor), doc.go (monitor JSON→doc), testdata/
 internal/flows/    conntrack.go (netlink events, filter), doc.go (flow→doc), attrib.go + procfs.go (process attribution)
+internal/packages/ packages.go (dpkg-query → upsert current packages, drop stale ones)
 internal/rollup/   rollup.go (hourly $inc upserts)
 internal/store/    store.go (Open + ensure TTL/lookup indexes), sink.go (batch/backpressure/retry)
 internal/redact/   redact.go (scrub secrets from messages), redact_test.go
